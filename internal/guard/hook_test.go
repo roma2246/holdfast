@@ -43,7 +43,7 @@ func TestRunHook(t *testing.T) {
 		decision string // "" — хук ничего не выводит (allow)
 	}{
 		{"deny rm home", "Bash", map[string]any{"command": "ls && rm -rf ~"}, "deny"},
-		{"ask push", "Bash", map[string]any{"command": "git push"}, "ask"},
+		{"push без git-репозитория", "Bash", map[string]any{"command": "git push"}, "deny"},
 		{"allow ls", "Bash", map[string]any{"command": "ls"}, ""},
 		{"deny edit env", "Edit", map[string]any{"file_path": filepath.Join(root, ".env")}, "deny"},
 		{"deny write pem", "Write", map[string]any{"file_path": filepath.Join(root, "k.pem"), "content": "x"}, "deny"},
@@ -108,7 +108,7 @@ func TestRunHookBadInput(t *testing.T) {
 func TestRunHookRecoversFromPanic(t *testing.T) {
 	root := t.TempDir()
 	orig := evaluate
-	evaluate = func(string, HookInput) Verdict { panic("boom") }
+	evaluate = func(string, HookInput) (Verdict, *Policy) { panic("boom") }
 	// t.Cleanup выполнится после теста — возвращаем настоящую функцию.
 	t.Cleanup(func() { evaluate = orig })
 
@@ -166,5 +166,79 @@ func BenchmarkHook(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		RunHook(bytes.NewReader(input), &bytes.Buffer{}, env)
+	}
+}
+
+func TestHookContextNotes(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "CLAUDE.md", "# P\n\n## Rules\n\n- Never edit `migrations/` — они уже в продакшене.\n- Код API живёт в src/api/.\n\n```\nmigrations/ в блоке кода не считается\n```\n")
+	write(t, root, "holdfast.toml", "[[guard.context]]\npaths = [\"migrations/**\"]\nnote = \"Добавляй новую миграцию 00N_описание.sql\"\n")
+	write(t, root, "migrations/001.sql", "x")
+	env := testEnv(root)
+
+	call := func(session, tool string, input map[string]any) hookOutput {
+		t.Helper()
+		data, _ := json.Marshal(map[string]any{"session_id": session, "cwd": root, "tool_name": tool, "tool_input": input})
+		var out bytes.Buffer
+		RunHook(bytes.NewReader(data), &out, env)
+		var resp hookOutput
+		if out.Len() > 0 {
+			if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+				t.Fatalf("%v: %s", err, out.String())
+			}
+		}
+		return resp
+	}
+
+	mig := map[string]any{"file_path": filepath.Join(root, "migrations/001.sql")}
+	resp := call("sess-1", "Read", mig)
+	h := resp.HookSpecificOutput
+	if h.PermissionDecision != "" {
+		t.Fatalf("подсказка не должна менять решение: %+v", h)
+	}
+	for _, want := range []string{"holdfast.toml", "00N_описание.sql", "CLAUDE.md:5", "Never edit"} {
+		if !strings.Contains(h.AdditionalContext, want) {
+			t.Errorf("в подсказке нет %q:\n%s", want, h.AdditionalContext)
+		}
+	}
+	if strings.Contains(h.AdditionalContext, "блоке кода") || strings.Contains(h.AdditionalContext, "src/api") {
+		t.Errorf("лишние строки в подсказке:\n%s", h.AdditionalContext)
+	}
+
+	// Повторно в той же сессии — не показываем; в новой — снова.
+	if again := call("sess-1", "Edit", mig); again.HookSpecificOutput.AdditionalContext != "" {
+		t.Errorf("повтор в той же сессии: %+v", again)
+	}
+	if other := call("sess-2", "Bash", map[string]any{"command": "sed -i s/a/b/ migrations/001.sql"}); !strings.Contains(other.HookSpecificOutput.AdditionalContext, "Never edit") {
+		t.Errorf("новая сессия и Bash должны получить подсказку: %+v", other)
+	}
+	// Файл без правил — хук молчит.
+	if none := call("sess-3", "Read", map[string]any{"file_path": filepath.Join(root, "README.md")}); none.HookSpecificOutput.HookEventName != "" {
+		t.Errorf("для файла без правил хук должен молчать: %+v", none)
+	}
+	// Источник подсказки попадает в журнал.
+	entries, _ := ReadLog(root)
+	if len(entries) == 0 || len(entries[0].Context) != 2 {
+		t.Fatalf("журнал: %+v", entries)
+	}
+}
+
+func TestFormatAndFilterNotes(t *testing.T) {
+	if FormatNotes(nil) != "" {
+		t.Error("пустой список")
+	}
+	notes := []Note{{"a", "x"}, {"b", "y"}}
+	if got := FilterSeen(t.TempDir(), "", notes); len(got) != 2 {
+		t.Error("без session_id фильтрации нет")
+	}
+	root := t.TempDir()
+	if got := FilterSeen(root, "../../evil/../id", notes); len(got) != 2 {
+		t.Error("первый показ")
+	}
+	if got := FilterSeen(root, "../../evil/../id", notes); len(got) != 0 {
+		t.Error("второй показ должен отфильтроваться")
+	}
+	if _, err := os.Stat(filepath.Join(root, StateDir, "seen", "evilid")); err != nil {
+		t.Errorf("имя сессии должно очищаться от ../: %v", err)
 	}
 }

@@ -60,6 +60,9 @@ type Policy struct {
 
 	cwdUnknown bool // был `cd $VAR` — относительные пути неизвестны
 
+	// touched — файлы, которые затрагивает действие (для подсказок агенту).
+	touched []string
+
 	globMu    sync.Mutex
 	globCache map[string]*regexp.Regexp
 }
@@ -67,10 +70,10 @@ type Policy struct {
 // NewPolicy создаёт политику. cfg может быть nil — тогда только встроенные правила.
 func NewPolicy(root, cwd string, cfg *config.GuardConfig) *Policy {
 	if cfg == nil {
-		cfg = &config.GuardConfig{MaxDeletes: config.DefaultMaxDeletes}
+		cfg = &config.GuardConfig{}
 	}
-	if cfg.MaxDeletes <= 0 {
-		cfg.MaxDeletes = config.DefaultMaxDeletes
+	if err := cfg.Normalize(); err != nil {
+		cfg.Mode = config.ModeAutonomous
 	}
 	if cwd == "" {
 		cwd = root
@@ -90,9 +93,35 @@ const (
 	OpWrite
 )
 
+// soft — решение для опасного, но не катастрофического действия.
+// В strict-режиме — спросить человека; в autonomous — запретить и сразу
+// подсказать агенту, как сделать правильно, чтобы он исправился сам.
+func (p *Policy) soft(rule, reason, hint string) Verdict {
+	if p.cfg.Strict() {
+		return Verdict{Ask, rule, reason + " — нужно подтверждение пользователя"}
+	}
+	return Verdict{Deny, rule, reason + ". " + hint}
+}
+
+// reversible — действие, которое можно откатить снапшотом (массовое
+// удаление файлов проекта). В autonomous разрешено, если снапшот есть.
+func (p *Policy) reversible(rule, reason string) Verdict {
+	if p.cfg.Strict() {
+		return Verdict{Ask, rule, reason + " — нужно подтверждение пользователя"}
+	}
+	if hasSnapshot(p.Root) {
+		return allowVerdict // откат: holdfast guard rollback
+	}
+	return Verdict{Deny, rule, reason + ", а снапшота нет. Выполни `holdfast guard start` (сохранит состояние для отката) и повтори команду"}
+}
+
+// Touched — файлы (абсолютные пути), которые затронуло проверенное действие.
+func (p *Policy) Touched() []string { return p.touched }
+
 // CheckFile проверяет чтение или запись файла инструментами Read/Edit/Write.
 func (p *Policy) CheckFile(op FileOp, path string) Verdict {
 	abs := p.abs(path)
+	p.touched = []string{abs}
 	if v := p.checkSensitive(abs); v.Decision != Allow {
 		return v
 	}
@@ -159,7 +188,19 @@ func (p *Policy) checkSensitive(abs string) Verdict {
 		return allowVerdict
 	}
 	return Verdict{Deny, "secret-file", fmt.Sprintf(
-		"доступ к файлу с секретами (%s) запрещён. Если нужна конфигурация — читайте .env.example или попросите пользователя назвать нужные переменные", filepath.Base(abs))}
+		"доступ к файлу с секретами (%s) запрещён. Имена переменных смотри в .env.example или в коде (os.Getenv / process.env); значения не нужны — используй переменные окружения", filepath.Base(abs))}
+}
+
+// isTempPath — путь внутри временной папки (но не она сама). Агенты часто
+// работают во временных папках, удалять там можно без вопросов.
+func isTempPath(abs string) bool {
+	for _, dir := range []string{os.TempDir(), "/tmp", "/private/tmp", "/var/folders", "/private/var/folders"} {
+		dir = filepath.Clean(dir)
+		if abs != dir && isWithin(dir, abs) {
+			return true
+		}
+	}
+	return false
 }
 
 // checkWritePath — запись/изменение файла: синхронизированные запреты
@@ -167,6 +208,9 @@ func (p *Policy) checkSensitive(abs string) Verdict {
 func (p *Policy) checkWritePath(abs string) Verdict {
 	if !p.inRepo(abs) {
 		return allowVerdict
+	}
+	if len(p.touched) == 0 || p.touched[len(p.touched)-1] != abs {
+		p.touched = append(p.touched, abs)
 	}
 	rel := p.rel(abs)
 	for _, r := range p.cfg.Synced.Rules {

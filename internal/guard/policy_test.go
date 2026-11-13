@@ -3,6 +3,7 @@ package guard
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/roma2246/holdfast/internal/config"
@@ -24,6 +25,7 @@ func newTestPolicy(t *testing.T) *Policy {
 		}
 	}
 	cfg := &config.GuardConfig{
+		Mode:           config.ModeStrict, // таблица ниже — поведение из ТЗ
 		ProtectedPaths: []string{"migrations/**"},
 		DenyCommands:   []string{"git push --force"},
 		AskCommands:    []string{"git push", "npm publish", "docker compose down"},
@@ -304,4 +306,135 @@ func shellQuote(s string) string {
 		}
 	}
 	return out + "'"
+}
+
+// fakeRepo создаёт «репозиторий» только из файлов .git, которые читает хук:
+// HEAD (текущая ветка), тег и, по желанию, снапшот holdfast.
+func fakeRepo(t *testing.T, head string, snapshot bool) string {
+	t.Helper()
+	root := t.TempDir()
+	files := map[string]string{
+		".git/HEAD":           head + "\n",
+		".git/refs/tags/v1.0": "0000000000000000000000000000000000000000\n",
+		"a.txt":               "a",
+		"build/1.o":           "", "build/2.o": "", "build/3.o": "", "build/4.o": "", "build/5.o": "", "build/6.o": "",
+		"migrations/001_init.sql": "x",
+	}
+	if snapshot {
+		files[".git/refs/holdfast/20261113-120000-000"] = "0000000000000000000000000000000000000000\n"
+	}
+	for name, content := range files {
+		path := filepath.Join(root, name)
+		os.MkdirAll(filepath.Dir(path), 0o755)
+		os.WriteFile(path, []byte(content), 0o644)
+	}
+	return root
+}
+
+func autoPolicy(t *testing.T, root string) *Policy {
+	p := NewPolicy(root, root, &config.GuardConfig{
+		ProtectedPaths: []string{"migrations/**"},
+		AskCommands:    []string{"docker compose down"},
+	})
+	p.Home = fakeHome
+	return p
+}
+
+func TestAutonomousMode(t *testing.T) {
+	feature := autoPolicy(t, fakeRepo(t, "ref: refs/heads/feature/login", false))
+	withSnap := autoPolicy(t, fakeRepo(t, "ref: refs/heads/feature/login", true))
+	onMain := autoPolicy(t, fakeRepo(t, "ref: refs/heads/main", false))
+	detached := autoPolicy(t, fakeRepo(t, "3f1c2d0000000000000000000000000000000000", false))
+
+	tests := []struct {
+		name string
+		p    *Policy
+		cmd  string
+		want Decision
+		rule string
+	}{
+		// git push: своя ветка — можно, защищённые — нельзя, с подсказкой.
+		{"push своей ветки", feature, "git push", Allow, ""},
+		{"push -u HEAD", feature, "git push -u origin HEAD", Allow, ""},
+		{"push явной ветки", feature, "git push origin feature/login", Allow, ""},
+		{"push в main", feature, "git push origin main", Deny, "git-push-protected"},
+		{"push HEAD:main", feature, "git push origin HEAD:refs/heads/main", Deny, "git-push-protected"},
+		{"push с main", onMain, "git push", Deny, "git-push-protected"},
+		{"detached HEAD", detached, "git push", Deny, "git-push-branch"},
+		{"force", feature, "git push --force-with-lease", Deny, "git-push-force"},
+		{"удаление ветки", feature, "git push origin --delete old", Deny, "git-push-delete"},
+		{"удаление через :", feature, "git push origin :old", Deny, "git-push-delete"},
+		{"теги", feature, "git push --tags", Deny, "git-push-tags"},
+		{"тег по имени", feature, "git push origin v1.0", Deny, "git-push-tags"},
+		{"все ветки", feature, "git push --all", Deny, "git-push-all"},
+		{"repo с значением", feature, "git push --repo origin", Allow, ""},
+
+		// Обратимое: разрешено, если есть снапшот; без снапшота — подсказка.
+		{"массовое удаление без снапшота", feature, "rm -r build", Deny, "mass-delete"},
+		{"массовое удаление со снапшотом", withSnap, "rm -r build", Allow, ""},
+		{"find -delete без снапшота", feature, "find build -name '*.o' -delete", Deny, "mass-delete"},
+		{"find -delete со снапшотом", withSnap, "find build -name '*.o' -delete", Allow, ""},
+		{"git clean со снапшотом", withSnap, "git clean -fd", Allow, ""},
+		{"git clean без снапшота", feature, "git clean -fd", Deny, "git-clean"},
+		{"git clean -x", withSnap, "git clean -fdx", Deny, "git-clean"},
+
+		// Вместо «спросить» — запрет с подсказкой.
+		{"npm publish", feature, "npm publish", Deny, "npm-publish"},
+		{"rm -rf $DIR", feature, "rm -rf $DIR", Deny, "rm-dynamic"},
+		{"xargs rm", feature, "ls | xargs rm -rf", Deny, "rm-dynamic"},
+		{"rm вне репозитория", feature, "rm /usr/local/other.txt", Deny, "rm-outside-repo"},
+		{"синтаксис", feature, "echo 'unterminated", Deny, "parse-error"},
+
+		// Временные папки — свободно, но не сама /tmp.
+		{"rm в /tmp", feature, "rm /tmp/scratch.txt", Allow, ""},
+		{"rm -rf в /tmp", feature, "rm -rf /tmp/build-cache", Allow, ""},
+		{"rm -rf /tmp", feature, "rm -rf /tmp", Deny, "rm-outside-repo"},
+
+		// Необратимое — как раньше.
+		{"rm -rf ~", feature, "rm -rf ~", Deny, "rm-home"},
+		{"reset --hard", feature, "git reset --hard", Deny, "git-reset-hard"},
+		{"секреты", feature, "cat .env", Deny, "secret-file"},
+
+		// Явные просьбы пользователя остаются «спросить».
+		{"ask_commands", feature, "docker compose down", Ask, "ask-command"},
+		{"protected_paths", feature, "echo x > migrations/002.sql", Ask, "protected-path"},
+		{"обычная команда", feature, "go test ./...", Allow, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.p.CheckCommand(tt.cmd)
+			if got.Decision != tt.want || got.Rule != tt.rule {
+				t.Fatalf("%q = %s [%s: %s], want %s [%s]", tt.cmd, got.Decision, got.Rule, got.Reason, tt.want, tt.rule)
+			}
+			// Запрет в autonomous всегда объясняет, что делать вместо.
+			if got.Decision == Deny && len([]rune(got.Reason)) < 40 {
+				t.Errorf("слишком короткая подсказка: %q", got.Reason)
+			}
+		})
+	}
+}
+
+func TestMassDeleteHintMentionsSnapshot(t *testing.T) {
+	p := autoPolicy(t, fakeRepo(t, "ref: refs/heads/dev", false))
+	if v := p.CheckCommand("rm -r build"); !strings.Contains(v.Reason, "holdfast guard start") {
+		t.Fatalf("подсказка должна предлагать снапшот: %q", v.Reason)
+	}
+}
+
+func TestGitFS(t *testing.T) {
+	root := fakeRepo(t, "ref: refs/heads/dev", false)
+	// worktree: .git — файл со ссылкой на настоящую папку.
+	wt := t.TempDir()
+	os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+filepath.Join(root, ".git")+"\n"), 0o644)
+	if b := currentBranch(wt); b != "dev" {
+		t.Errorf("worktree branch = %q", b)
+	}
+	// packed-refs
+	os.WriteFile(filepath.Join(root, ".git", "packed-refs"), []byte("# pack-refs\nabc refs/tags/v2.0\nabc refs/holdfast/x\n"), 0o644)
+	if !refExists(root, "refs/tags/v2.0") || refExists(root, "refs/tags/v9") || !hasSnapshot(root) {
+		t.Error("packed-refs не прочитан")
+	}
+	if currentBranch(t.TempDir()) != "" || hasSnapshot(t.TempDir()) || refExists(t.TempDir(), "x") {
+		t.Error("вне git должно быть пусто")
+	}
 }

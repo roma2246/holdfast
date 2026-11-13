@@ -40,13 +40,60 @@ type LintConfig struct {
 	Disable   []string `toml:"disable"`
 }
 
+// Режимы guard.
+const (
+	// ModeAutonomous — агент работает без остановок: необратимое
+	// запрещается с подсказкой, как сделать правильно, обратимое
+	// (под защитой снапшота) разрешается. «Спросить» — только там,
+	// где пользователь сам попросил (ask_commands, protected_paths).
+	ModeAutonomous = "autonomous"
+	// ModeStrict — поведение из исходного ТЗ: опасное, но обратимое
+	// требует подтверждения человека.
+	ModeStrict = "strict"
+)
+
+// DefaultProtectedBranches — ветки, push в которые агенту запрещён.
+var DefaultProtectedBranches = []string{"main", "master"}
+
 // GuardConfig — секция [guard].
 type GuardConfig struct {
-	ProtectedPaths []string     `toml:"protected_paths"`
-	DenyCommands   []string     `toml:"deny_commands"`
-	AskCommands    []string     `toml:"ask_commands"`
-	MaxDeletes     int          `toml:"max_deletes"`
-	Synced         SyncedConfig `toml:"synced"`
+	Mode              string        `toml:"mode"`
+	ProtectedPaths    []string      `toml:"protected_paths"`
+	ProtectedBranches []string      `toml:"protected_branches"`
+	DenyCommands      []string      `toml:"deny_commands"`
+	AskCommands       []string      `toml:"ask_commands"`
+	MaxDeletes        int           `toml:"max_deletes"`
+	Context           []ContextNote `toml:"context"`
+	Synced            SyncedConfig  `toml:"synced"`
+}
+
+// ContextNote — подсказка, которую хук показывает агенту в момент, когда
+// тот трогает файлы из Paths. Так правило попадает к агенту вовремя, а
+// не лежит в длинном CLAUDE.md.
+type ContextNote struct {
+	Paths []string `toml:"paths"`
+	Note  string   `toml:"note"`
+}
+
+// Strict — включён ли строгий режим.
+func (g *GuardConfig) Strict() bool { return g.Mode == ModeStrict }
+
+// Normalize подставляет значения по умолчанию и проверяет режим.
+func (g *GuardConfig) Normalize() error {
+	if g.MaxDeletes <= 0 {
+		g.MaxDeletes = DefaultMaxDeletes
+	}
+	if g.ProtectedBranches == nil {
+		g.ProtectedBranches = append([]string(nil), DefaultProtectedBranches...)
+	}
+	switch g.Mode {
+	case "":
+		g.Mode = ModeAutonomous
+	case ModeAutonomous, ModeStrict:
+	default:
+		return fmt.Errorf("guard.mode: неизвестный режим %q (autonomous или strict)", g.Mode)
+	}
+	return nil
 }
 
 // SyncedConfig — секция [guard.synced], её целиком пишет holdfast sync.
@@ -77,7 +124,11 @@ func Default() *Config {
 			Files:     append([]string(nil), DefaultLintFiles...),
 			MaxTokens: DefaultMaxTokens,
 		},
-		Guard: GuardConfig{MaxDeletes: DefaultMaxDeletes},
+		Guard: GuardConfig{
+			Mode:              ModeAutonomous,
+			MaxDeletes:        DefaultMaxDeletes,
+			ProtectedBranches: append([]string(nil), DefaultProtectedBranches...),
+		},
 	}
 }
 
@@ -94,7 +145,9 @@ func Load(root string) (*Config, error) {
 		}
 		return nil, fmt.Errorf("чтение %s: %w", path, err)
 	}
-	cfg.normalize()
+	if err := cfg.normalize(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	return cfg, nil
 }
 
@@ -106,27 +159,24 @@ func LoadGuard(root string) (*GuardConfig, error) {
 	var partial struct {
 		Guard GuardConfig `toml:"guard"`
 	}
-	partial.Guard.MaxDeletes = DefaultMaxDeletes
 	_, err := toml.DecodeFile(filepath.Join(root, FileName), &partial)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
-	if partial.Guard.MaxDeletes <= 0 {
-		partial.Guard.MaxDeletes = DefaultMaxDeletes
+	if err := partial.Guard.Normalize(); err != nil {
+		return nil, err
 	}
 	return &partial.Guard, nil
 }
 
-func (c *Config) normalize() {
+func (c *Config) normalize() error {
 	if len(c.Lint.Files) == 0 {
 		c.Lint.Files = append([]string(nil), DefaultLintFiles...)
 	}
 	if c.Lint.MaxTokens <= 0 {
 		c.Lint.MaxTokens = DefaultMaxTokens
 	}
-	if c.Guard.MaxDeletes <= 0 {
-		c.Guard.MaxDeletes = DefaultMaxDeletes
-	}
+	return c.Guard.Normalize()
 }
 
 // IsDisabled сообщает, выключено ли правило lint в конфиге.
@@ -151,14 +201,27 @@ max_tokens = 2000
 disable = []
 
 [guard]
-# Правки в этих путях требуют подтверждения (glob, ** — любая глубина).
+# autonomous — агент работает без остановок: необратимое запрещается
+#   с подсказкой, как сделать правильно, обратимое разрешается
+#   (откат: holdfast guard rollback);
+# strict — опасное, но обратимое требует вашего подтверждения.
+mode = "autonomous"
+# Ветки, push в которые агенту запрещён (в остальные — можно).
+protected_branches = ["main", "master"]
+# Правки в этих путях требуют вашего подтверждения (glob, ** — любая глубина).
 protected_paths = []
 # Команды, которые всегда запрещены (сверх встроенной политики).
-deny_commands = ["git push --force"]
-# Команды, перед которыми агент должен спросить разрешения.
-ask_commands = ["git push", "npm publish"]
-# Удаление большего числа файлов одной командой требует подтверждения.
+deny_commands = []
+# Команды, перед которыми агент должен спросить вас (в любом режиме).
+ask_commands = []
+# Сколько файлов можно удалить одной командой без снапшота.
 max_deletes = 5
+
+# Подсказки агенту в момент, когда он трогает эти файлы.
+# Так правила не раздувают CLAUDE.md и приходят вовремя.
+# [[guard.context]]
+# paths = ["migrations/**"]
+# note = "Существующие миграции не меняем: добавь новый файл 00N_описание.sql"
 `
 
 // WriteTemplate создаёт holdfast.toml. Без force не перезаписывает файл.

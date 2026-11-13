@@ -20,6 +20,7 @@ const maxDepth = 5
 // ~/projects. Policy поэтому не потокобезопасна для CheckCommand.
 func (p *Policy) CheckCommand(src string) Verdict {
 	saved := p.Cwd
+	p.touched = nil
 	defer func() { p.Cwd, p.cwdUnknown = saved, false }()
 	return p.checkScript(src, 0)
 }
@@ -38,11 +39,11 @@ func (p *Policy) trackCd(args []word) {
 
 func (p *Policy) checkScript(src string, depth int) Verdict {
 	if depth > maxDepth {
-		return Verdict{Ask, "too-deep", "слишком глубокая вложенность bash -c — нужна проверка пользователем"}
+		return p.soft("too-deep", "слишком глубокая вложенность bash -c", "Разбей команду на несколько простых шагов")
 	}
 	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(src), "")
 	if err != nil {
-		return Verdict{Ask, "parse-error", fmt.Sprintf("не удалось разобрать команду (%v) — нужна проверка пользователем", err)}
+		return p.soft("parse-error", fmt.Sprintf("не удалось разобрать команду (%v)", err), "Перепиши команду в простом синтаксисе bash")
 	}
 	v := allowVerdict
 	// syntax.Walk обходит всё дерево, включая $(...), <(...), тела
@@ -90,7 +91,11 @@ func wordValue(w *syntax.Word) word {
 					b.WriteString("$HOME") // раскроем как домашнюю папку
 				} else {
 					dyn = true
-					b.WriteString("$VAR")
+					name := "VAR"
+					if x.Param != nil {
+						name = x.Param.Value
+					}
+					b.WriteString("$" + name)
 				}
 			default: // $(...), <(...), $((...)), {a,b} и т.п.
 				dyn = true
@@ -216,11 +221,12 @@ func (p *Policy) checkCall(c *syntax.CallExpr, depth int) Verdict {
 		v = worst(v, p.checkGit(args[1:]))
 	case name == "npm" || name == "pnpm" || name == "yarn" || name == "bun":
 		if hasArg(args[1:], "publish") {
-			v = worst(v, Verdict{Ask, "npm-publish", name + " publish публикует пакет — нужно подтверждение пользователя"})
+			v = worst(v, p.soft("npm-publish", name+" publish необратимо публикует пакет",
+				"Подготовь версию и changelog, а публикацию оставь человеку или CI"))
 		}
 	case name == "find":
 		if hasArg(args[1:], "-delete") || execsRm(args[1:]) {
-			v = worst(v, Verdict{Ask, "mass-delete", "find с удалением может удалить много файлов — нужно подтверждение"})
+			v = worst(v, p.reversible("mass-delete", "find с удалением может удалить много файлов"))
 		}
 	}
 
@@ -417,7 +423,8 @@ func (p *Policy) checkRm(args []word, viaXargs bool) Verdict {
 	}
 
 	if viaXargs && recursive {
-		return Verdict{Ask, "rm-dynamic", "rm -r с путями из xargs: цели неизвестны заранее — нужно подтверждение"}
+		return p.soft("rm-dynamic", "rm -r с путями из xargs: цели неизвестны заранее",
+			"Перечисли пути явно (сначала посмотри список без rm)")
 	}
 
 	v := allowVerdict
@@ -426,7 +433,8 @@ func (p *Policy) checkRm(args []word, viaXargs bool) Verdict {
 		relativeAfterUnknownCd := p.cwdUnknown && !filepath.IsAbs(p.expandHome(t.s))
 		if (t.dynamic && !strings.HasPrefix(t.s, "$HOME")) || relativeAfterUnknownCd {
 			if recursive {
-				v = worst(v, Verdict{Ask, "rm-dynamic", fmt.Sprintf("rm -r с вычисляемым путём (%s): значение неизвестно — нужно подтверждение", t.s)})
+				v = worst(v, p.soft("rm-dynamic", fmt.Sprintf("rm -r с вычисляемым путём (%s): значение неизвестно", t.s),
+					"Подставь путь явно, без переменных и cd на переменную"))
 			}
 			continue
 		}
@@ -438,6 +446,8 @@ func (p *Policy) checkRm(args []word, viaXargs bool) Verdict {
 		}
 
 		switch {
+		case !p.cfg.Strict() && isTempPath(base):
+			// временные файлы: удаляем без вопросов
 		case recursive && (base == "/" || base == filepath.Dir(base)):
 			return Verdict{Deny, "rm-root", "rm -r на корень файловой системы запрещён"}
 		case recursive && (base == p.Home || isWithin(base, p.Home)):
@@ -447,12 +457,13 @@ func (p *Policy) checkRm(args []word, viaXargs bool) Verdict {
 		case recursive && !p.inRepo(base):
 			return Verdict{Deny, "rm-outside-repo", fmt.Sprintf("rm -r вне репозитория (%s) запрещён. Работайте только с файлами проекта %s", base, p.Root)}
 		case !p.inRepo(base):
-			v = worst(v, Verdict{Ask, "rm-outside-repo", fmt.Sprintf("удаление файла вне репозитория (%s) — нужно подтверждение", abs)})
+			v = worst(v, p.soft("rm-outside-repo", fmt.Sprintf("удаление файла вне репозитория (%s)", abs),
+				"Удаляй только файлы проекта или временные файлы в /tmp"))
 		}
 		count += p.countTargets(abs, recursive, p.cfg.MaxDeletes+1-count)
 	}
 	if count > p.cfg.MaxDeletes {
-		v = worst(v, Verdict{Ask, "mass-delete", fmt.Sprintf("удаление более %d файлов — нужно подтверждение пользователя", p.cfg.MaxDeletes)})
+		v = worst(v, p.reversible("mass-delete", fmt.Sprintf("удаление более %d файлов", p.cfg.MaxDeletes)))
 	}
 	return v
 }
@@ -515,24 +526,107 @@ func (p *Policy) checkGit(args []word) Verdict {
 	sub, rest := args[0].s, args[1:]
 	switch sub {
 	case "push":
-		for _, a := range rest {
-			s := a.s
-			force := s == "--force" || strings.HasPrefix(s, "--force-with-lease") || s == "--force-if-includes" || s == "--mirror" ||
-				(strings.HasPrefix(s, "-") && !strings.HasPrefix(s, "--") && strings.Contains(s, "f")) ||
-				(strings.HasPrefix(s, "+") && len(s) > 1)
-			if force {
-				return Verdict{Deny, "git-push-force", "git push --force переписывает историю на сервере и запрещён. Сделайте обычный push или попросите пользователя"}
-			}
-		}
-		return Verdict{Ask, "git-push", "git push отправляет код на сервер — нужно подтверждение пользователя"}
+		return p.checkPush(rest)
 	case "reset":
 		if hasArg(rest, "--hard") {
-			return Verdict{Deny, "git-reset-hard", "git reset --hard безвозвратно стирает незакоммиченные изменения и запрещён. Используйте git stash или git restore для конкретных файлов"}
+			return Verdict{Deny, "git-reset-hard", "git reset --hard безвозвратно стирает незакоммиченные изменения. Используй git stash или git restore <файл> для конкретных файлов"}
 		}
 	case "clean":
+		force, ignored := false, false
 		for _, a := range rest {
-			if a.s == "--force" || (strings.HasPrefix(a.s, "-") && !strings.HasPrefix(a.s, "--") && strings.Contains(a.s, "f")) {
-				return Verdict{Ask, "git-clean", "git clean удаляет неотслеживаемые файлы — нужно подтверждение"}
+			short := strings.HasPrefix(a.s, "-") && !strings.HasPrefix(a.s, "--")
+			if a.s == "--force" || (short && strings.Contains(a.s, "f")) {
+				force = true
+			}
+			if short && strings.ContainsAny(a.s, "xX") {
+				ignored = true
+			}
+		}
+		switch {
+		case force && ignored:
+			return p.soft("git-clean", "git clean -x удаляет и игнорируемые файлы (.env, локальные настройки) — их нет в снапшоте",
+				"Удаляй конкретные файлы или используй git clean -f без -x")
+		case force:
+			return p.reversible("git-clean", "git clean удаляет неотслеживаемые файлы")
+		}
+	}
+	return allowVerdict
+}
+
+// checkPush: force-push запрещён всегда. В autonomous обычный push в свою
+// ветку разрешён, а в защищённые ветки (main) — запрещён с подсказкой.
+func (p *Policy) checkPush(args []word) Verdict {
+	withValue := map[string]bool{"--repo": true, "-o": true, "--push-option": true, "--receive-pack": true, "--exec": true}
+	var positional []string
+	deleting, tags, all := false, false, false
+	for i := 0; i < len(args); i++ {
+		s := args[i].s
+		short := strings.HasPrefix(s, "-") && !strings.HasPrefix(s, "--")
+		switch {
+		case s == "--force" || strings.HasPrefix(s, "--force-with-lease") || s == "--force-if-includes" || s == "--mirror" ||
+			(short && strings.Contains(s, "f")) || (strings.HasPrefix(s, "+") && len(s) > 1):
+			return Verdict{Deny, "git-push-force", "git push --force переписывает историю на сервере. Сделай обычный push; если история разошлась — создай новую ветку и запушь её"}
+		case s == "--delete" || s == "-d":
+			deleting = true
+		case s == "--tags" || s == "--follow-tags":
+			tags = true
+		case s == "--all" || s == "--branches":
+			all = true
+		case withValue[s]:
+			i++
+		case strings.HasPrefix(s, "-"):
+		default:
+			positional = append(positional, s)
+		}
+	}
+	if p.cfg.Strict() {
+		return Verdict{Ask, "git-push", "git push отправляет код на сервер — нужно подтверждение пользователя"}
+	}
+
+	var refspecs []string
+	if len(positional) > 1 {
+		refspecs = positional[1:]
+	}
+	for _, r := range refspecs {
+		if strings.HasPrefix(r, ":") {
+			deleting = true
+		}
+	}
+	switch {
+	case deleting:
+		return Verdict{Deny, "git-push-delete", "удаление веток на сервере необратимо. Сообщи пользователю, какую ветку нужно удалить"}
+	case tags:
+		return Verdict{Deny, "git-push-tags", "push тегов обычно запускает релиз. Создай тег локально и предложи пользователю его запушить"}
+	case all:
+		return Verdict{Deny, "git-push-all", "push всех веток сразу запрещён. Запушь только свою рабочую ветку: git push origin <ветка>"}
+	}
+
+	cur := currentBranch(p.Root)
+	var targets []string
+	if len(refspecs) == 0 {
+		targets = []string{cur}
+	}
+	for _, r := range refspecs {
+		dst := r
+		if _, after, ok := strings.Cut(r, ":"); ok {
+			dst = after
+		}
+		if dst == "HEAD" {
+			dst = cur
+		}
+		if strings.HasPrefix(dst, "refs/tags/") || (dst != "" && refExists(p.Root, "refs/tags/"+dst)) {
+			return Verdict{Deny, "git-push-tags", "push тегов обычно запускает релиз. Создай тег локально и предложи пользователю его запушить"}
+		}
+		targets = append(targets, strings.TrimPrefix(dst, "refs/heads/"))
+	}
+	for _, t := range targets {
+		if t == "" {
+			return Verdict{Deny, "git-push-branch", "не удалось определить ветку (detached HEAD?). Укажи ветку явно: git push origin <ветка>"}
+		}
+		for _, protected := range p.cfg.ProtectedBranches {
+			if t == protected {
+				return Verdict{Deny, "git-push-protected", fmt.Sprintf(
+					"push в защищённую ветку %s запрещён. Создай рабочую ветку (git switch -c <имя>), запушь её (git push -u origin <имя>) и предложи pull request", t)}
 			}
 		}
 	}

@@ -258,6 +258,9 @@ func (a *app) printLogTable(entries []guard.LogEntry) {
 		if e.Decision != "allow" && e.Reason != "" {
 			why = e.Rule + ": " + e.Reason
 		}
+		if len(e.Context) > 0 {
+			why = strings.TrimPrefix(why+" · подсказка: "+strings.Join(e.Context, ", "), " · ")
+		}
 		t.Row(e.Time.Local().Format("01-02 15:04:05"), e.Decision, e.Tool, truncate(e.Target, 48), truncate(why, 60))
 	}
 	t.StyleFunc(func(row, col int) lipgloss.Style {

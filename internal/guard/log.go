@@ -22,6 +22,7 @@ type LogEntry struct {
 	Decision string    `json:"decision"`
 	Rule     string    `json:"rule,omitempty"`
 	Reason   string    `json:"reason,omitempty"`
+	Context  []string  `json:"context,omitempty"` // источники подсказок, показанных агенту
 }
 
 // LogPath — путь к журналу в репозитории root.

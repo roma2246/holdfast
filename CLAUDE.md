@@ -30,7 +30,8 @@ CLI-утилита на Go: `holdfast lint` проверяет файлы инс
 - Новое правило lint: файл `internal/lint/rules/hfNNN_name.go` с `lint.Register` в `init()`,
   фикстуры `testdata/lint/HFNNN/bad` и `good`, ID в списке в `rules_test.go`.
 - Команды shell разбираются только через AST (`mvdan.cc/sh/v3/syntax`), без поиска подстрок.
-- Новый случай guard — строка в табличном тесте `TestCheckCommand`.
+- Новый случай guard — строка в табличном тесте: `TestAutonomousMode` (режим по умолчанию) или `TestCheckCommand` (strict).
+- В autonomous-режиме запрет всегда объясняет агенту, что сделать вместо; «спросить» — только по явной настройке пользователя.
 - Хук не должен падать и должен отвечать быстрее 10 мс: проверяйте `TestHookLatency`.
 - Комментарии к неочевидным конструкциям Go пишем по-русски.
 - Покрытие не ниже 80%.

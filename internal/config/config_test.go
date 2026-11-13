@@ -30,7 +30,7 @@ func TestLoadDefaultsAndTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Guard.AskCommands) != 2 || cfg.Guard.DenyCommands[0] != "git push --force" {
+	if len(cfg.Guard.AskCommands) != 0 || cfg.Guard.Mode != ModeAutonomous || cfg.Guard.ProtectedBranches[0] != "main" {
 		t.Fatalf("template: %+v", cfg.Guard)
 	}
 }
@@ -120,10 +120,33 @@ func TestWriteSyncedNoConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg, err := Load(dir)
-	if err != nil || len(cfg.Guard.Synced.Rules) != 1 || len(cfg.Guard.AskCommands) == 0 {
+	if err != nil || len(cfg.Guard.Synced.Rules) != 1 || cfg.Guard.Mode != ModeAutonomous {
 		t.Fatalf("%+v %v", cfg, err)
 	}
 	if quote("a\tb\x01") != `"a\tb\u0001"` {
 		t.Error(quote("a\tb\x01"))
+	}
+}
+
+func TestGuardModes(t *testing.T) {
+	dir := t.TempDir()
+	write := func(text string) {
+		os.WriteFile(filepath.Join(dir, FileName), []byte(text), 0o644)
+	}
+	write("[guard]\nmode = \"strict\"\nprotected_branches = [\"release\"]\n[[guard.context]]\npaths = [\"db/**\"]\nnote = \"x\"\n")
+	g, err := LoadGuard(dir)
+	if err != nil || !g.Strict() || g.ProtectedBranches[0] != "release" || len(g.Context) != 1 {
+		t.Fatalf("%+v %v", g, err)
+	}
+	write("[guard]\nmode = \"yolo\"\n")
+	if _, err := LoadGuard(dir); err == nil {
+		t.Fatal("неизвестный режим должен давать ошибку")
+	}
+	if _, err := Load(dir); err == nil {
+		t.Fatal("неизвестный режим должен давать ошибку")
+	}
+	g, _ = LoadGuard(t.TempDir())
+	if g.Strict() || g.Mode != ModeAutonomous || len(g.ProtectedBranches) != 2 {
+		t.Fatalf("defaults: %+v", g)
 	}
 }

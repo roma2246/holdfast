@@ -29,5 +29,5 @@ func (r sizeRule) Check(doc *lint.Doc, repo *lint.Repo) []lint.Finding {
 	}
 	return []lint.Finding{lint.F(r.ID(), lint.Warning, doc, 1,
 		fmt.Sprintf("файл ~%d токенов, лимит %d", tokens, limit),
-		"каждый токен инструкции съедает контекст агента; вынесите детали в отдельные документы и сошлитесь на них")}
+		"каждый токен инструкции съедает контекст агента; правила для отдельных папок вынесите в [[guard.context]] holdfast.toml — хук покажет их агенту в момент работы с этими файлами")}
 }

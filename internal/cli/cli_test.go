@@ -232,17 +232,27 @@ func TestGuardInstallCheckLog(t *testing.T) {
 	}
 
 	_, out, _ = run(t, "", "-C", dir, "guard", "log")
-	for _, want := range []string{"deny", "rm-home", "ask", "allow", "ПРАВИЛО"} {
+	// В autonomous-режиме вне git-репозитория ветку не определить → deny с подсказкой.
+	for _, want := range []string{"deny", "rm-home", "git-push-branch", "allow", "ПРАВИЛО"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("в журнале нет %q:\n%s", want, out)
 		}
 	}
-	_, out, _ = run(t, "", "-C", dir, "guard", "log", "--decision", "deny", "--json")
-	if strings.Count(out, "\n") != 1 || !strings.Contains(out, `"rm-home"`) {
+	// Подсказка из CLAUDE.md видна в журнале.
+	os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("- Never edit `db/` by hand.\n"), 0o644)
+	in, _ := json.Marshal(map[string]any{"tool_name": "Read", "cwd": dir, "tool_input": map[string]string{"file_path": filepath.Join(dir, "db", "x.sql")}})
+	if _, out, _ := run(t, string(in), "guard", "check"); !strings.Contains(out, "additionalContext") {
+		t.Fatalf("нет подсказки: %s", out)
+	}
+	if _, out, _ := run(t, "", "-C", dir, "guard", "log"); !strings.Contains(out, "подсказка: CLAUDE.md:1") {
+		t.Fatalf("подсказки нет в журнале:\n%s", out)
+	}
+	_, out, _ = run(t, "", "-C", dir, "guard", "log", "--decision", "allow", "--json")
+	if strings.Count(out, "\n") != 2 || !strings.Contains(out, `"ls"`) || !strings.Contains(out, `"context":["CLAUDE.md:1"]`) {
 		t.Fatal(out)
 	}
 	_, out, _ = run(t, "", "-C", dir, "guard", "log", "-n", "1", "--json")
-	if strings.Count(out, "\n") != 1 || !strings.Contains(out, "git push") {
+	if strings.Count(out, "\n") != 1 || !strings.Contains(out, "x.sql") {
 		t.Fatal(out)
 	}
 }

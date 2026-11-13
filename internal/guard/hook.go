@@ -27,12 +27,16 @@ type toolInput struct {
 	NotebookPath string `json:"notebook_path"` // NotebookEdit
 }
 
-// hookOutput — ответ хука. permissionDecision: "allow" | "deny" | "ask".
+// hookOutput — ответ хука. permissionDecision: "deny" | "ask" или пусто
+// (тогда работает обычная проверка разрешений Claude Code).
+// additionalContext — текст, который Claude получит вместе с результатом.
+// omitempty — не выводить поле в JSON, если оно пустое.
 type hookOutput struct {
 	HookSpecificOutput struct {
 		HookEventName            string `json:"hookEventName"`
-		PermissionDecision       string `json:"permissionDecision"`
-		PermissionDecisionReason string `json:"permissionDecisionReason"`
+		PermissionDecision       string `json:"permissionDecision,omitempty"`
+		PermissionDecisionReason string `json:"permissionDecisionReason,omitempty"`
+		AdditionalContext        string `json:"additionalContext,omitempty"`
 	} `json:"hookSpecificOutput"`
 }
 
@@ -52,8 +56,9 @@ func DefaultHookEnv() HookEnv {
 // применяет политику, пишет журнал и ответ. Всегда возвращает 0: хук
 // не должен «падать» и ломать сессию агента.
 //
-// При «allow» хук ничего не печатает: так Claude Code продолжает обычную
-// проверку разрешений, а не одобряет действие молча.
+// При «allow» хук не выносит решения: так Claude Code продолжает обычную
+// проверку разрешений, а не одобряет действие молча. Если для затронутых
+// файлов есть правила проекта, хук передаёт их агенту как additionalContext.
 func RunHook(stdin io.Reader, stdout io.Writer, env HookEnv) (code int) {
 	var (
 		root  string
@@ -65,7 +70,7 @@ func RunHook(stdin io.Reader, stdout io.Writer, env HookEnv) (code int) {
 	defer func() {
 		if r := recover(); r != nil {
 			v := Verdict{Ask, "internal-error", fmt.Sprintf("внутренняя ошибка holdfast (%v) — нужна проверка пользователем", r)}
-			writeDecision(stdout, v)
+			writeOutput(stdout, v, "")
 			if root != "" {
 				entry.Decision, entry.Rule, entry.Reason = v.Decision.String(), v.Rule, v.Reason
 				_ = AppendLog(root, entry)
@@ -82,13 +87,17 @@ func RunHook(stdin io.Reader, stdout io.Writer, env HookEnv) (code int) {
 	entry = LogEntry{Time: env.Now().UTC(), Session: input.SessionID, Tool: input.ToolName}
 	if err != nil {
 		v := Verdict{Ask, "bad-input", "holdfast не смог прочитать запрос хука — нужна проверка пользователем"}
-		finish(stdout, root, entry, v)
+		finish(stdout, root, entry, v, nil)
 		return 0
 	}
 
-	v := evaluate(root, input)
+	v, pol := evaluate(root, input)
 	entry.Target = describeTarget(input)
-	finish(stdout, root, entry, v)
+	var notes []Note
+	if pol != nil && v.Decision != Deny {
+		notes = FilterSeen(root, input.SessionID, pol.ContextNotes())
+	}
+	finish(stdout, root, entry, v, notes)
 	return 0
 }
 
@@ -96,12 +105,14 @@ func RunHook(stdin io.Reader, stdout io.Writer, env HookEnv) (code int) {
 // восстановление после panic.
 var evaluate = Evaluate
 
-// Evaluate применяет политику к одному вызову инструмента.
-func Evaluate(root string, input HookInput) Verdict {
+// Evaluate применяет политику к одному вызову инструмента. Возвращает
+// и саму политику (nil для непроверяемых инструментов) — по ней хук
+// узнаёт, какие файлы затронуты.
+func Evaluate(root string, input HookInput) (Verdict, *Policy) {
 	var ti toolInput
 	if len(input.ToolInput) > 0 {
 		if err := json.Unmarshal(input.ToolInput, &ti); err != nil {
-			return Verdict{Ask, "bad-input", "не удалось разобрать tool_input — нужна проверка пользователем"}
+			return Verdict{Ask, "bad-input", "не удалось разобрать tool_input — нужна проверка пользователем"}, nil
 		}
 	}
 	// Конфиг читаем лениво: только для инструментов, которые проверяем,
@@ -113,17 +124,25 @@ func Evaluate(root string, input HookInput) Verdict {
 		}
 		return NewPolicy(root, input.Cwd, cfg)
 	}
+	var p *Policy
+	var v Verdict
 	switch input.ToolName {
 	case "Bash":
-		return load().CheckCommand(ti.Command)
+		p = load()
+		v = p.CheckCommand(ti.Command)
 	case "Edit", "Write", "MultiEdit":
-		return load().CheckFile(OpWrite, ti.FilePath)
+		p = load()
+		v = p.CheckFile(OpWrite, ti.FilePath)
 	case "NotebookEdit":
-		return load().CheckFile(OpWrite, ti.NotebookPath)
+		p = load()
+		v = p.CheckFile(OpWrite, ti.NotebookPath)
 	case "Read":
-		return load().CheckFile(OpRead, ti.FilePath)
+		p = load()
+		v = p.CheckFile(OpRead, ti.FilePath)
+	default:
+		return allowVerdict, nil
 	}
-	return allowVerdict
+	return v, p
 }
 
 func describeTarget(in HookInput) string {
@@ -153,20 +172,27 @@ func projectRoot(in HookInput, env HookEnv) string {
 	return wd
 }
 
-func finish(w io.Writer, root string, e LogEntry, v Verdict) {
+func finish(w io.Writer, root string, e LogEntry, v Verdict, notes []Note) {
 	e.Decision, e.Rule, e.Reason = v.Decision.String(), v.Rule, v.Reason
+	for _, n := range notes {
+		e.Context = append(e.Context, n.Source)
+	}
 	if root != "" {
 		_ = AppendLog(root, e) // ошибка журнала не должна влиять на решение
 	}
-	if v.Decision != Allow {
-		writeDecision(w, v)
+	ctx := FormatNotes(notes)
+	if v.Decision != Allow || ctx != "" {
+		writeOutput(w, v, ctx)
 	}
 }
 
-func writeDecision(w io.Writer, v Verdict) {
+func writeOutput(w io.Writer, v Verdict, ctx string) {
 	var out hookOutput
 	out.HookSpecificOutput.HookEventName = "PreToolUse"
-	out.HookSpecificOutput.PermissionDecision = v.Decision.String()
-	out.HookSpecificOutput.PermissionDecisionReason = "holdfast [" + v.Rule + "]: " + v.Reason
+	if v.Decision != Allow {
+		out.HookSpecificOutput.PermissionDecision = v.Decision.String()
+		out.HookSpecificOutput.PermissionDecisionReason = "holdfast [" + v.Rule + "]: " + v.Reason
+	}
+	out.HookSpecificOutput.AdditionalContext = ctx
 	_ = json.NewEncoder(w).Encode(out)
 }
