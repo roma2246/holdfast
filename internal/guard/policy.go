@@ -1,0 +1,254 @@
+// Package guard — предохранитель для действий агента: политика, хук
+// Claude Code, журнал и снапшоты рабочего дерева.
+package guard
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+
+	"github.com/roma2246/holdfast/internal/config"
+)
+
+// Decision — решение политики. Порядок важен: чем больше, тем строже,
+// поэтому итог по нескольким командам — максимум (см. worst).
+type Decision int
+
+const (
+	Allow Decision = iota
+	Ask
+	Deny
+)
+
+func (d Decision) String() string {
+	switch d {
+	case Deny:
+		return "deny"
+	case Ask:
+		return "ask"
+	default:
+		return "allow"
+	}
+}
+
+// Verdict — решение с объяснением.
+type Verdict struct {
+	Decision Decision
+	Rule     string // короткий идентификатор правила, например "rm-outside-repo"
+	Reason   string // понятное агенту объяснение
+}
+
+var allowVerdict = Verdict{Decision: Allow}
+
+// worst возвращает более строгий из двух вердиктов.
+func worst(a, b Verdict) Verdict {
+	if b.Decision > a.Decision {
+		return b
+	}
+	return a
+}
+
+// Policy применяет правила к командам и файлам.
+type Policy struct {
+	Root string // абсолютный корень репозитория
+	Cwd  string // текущая папка агента (для относительных путей)
+	Home string // домашняя папка пользователя
+	cfg  *config.GuardConfig
+
+	cwdUnknown bool // был `cd $VAR` — относительные пути неизвестны
+
+	globMu    sync.Mutex
+	globCache map[string]*regexp.Regexp
+}
+
+// NewPolicy создаёт политику. cfg может быть nil — тогда только встроенные правила.
+func NewPolicy(root, cwd string, cfg *config.GuardConfig) *Policy {
+	if cfg == nil {
+		cfg = &config.GuardConfig{MaxDeletes: config.DefaultMaxDeletes}
+	}
+	if cfg.MaxDeletes <= 0 {
+		cfg.MaxDeletes = config.DefaultMaxDeletes
+	}
+	if cwd == "" {
+		cwd = root
+	}
+	home, _ := os.UserHomeDir()
+	return &Policy{
+		Root: filepath.Clean(root), Cwd: filepath.Clean(cwd), Home: filepath.Clean(home),
+		cfg: cfg, globCache: map[string]*regexp.Regexp{},
+	}
+}
+
+// FileOp — вид файловой операции.
+type FileOp int
+
+const (
+	OpRead FileOp = iota
+	OpWrite
+)
+
+// CheckFile проверяет чтение или запись файла инструментами Read/Edit/Write.
+func (p *Policy) CheckFile(op FileOp, path string) Verdict {
+	abs := p.abs(path)
+	if v := p.checkSensitive(abs); v.Decision != Allow {
+		return v
+	}
+	if op == OpWrite {
+		return p.checkWritePath(abs)
+	}
+	return allowVerdict
+}
+
+// abs превращает путь в абсолютный относительно Cwd, раскрывая ~ и $HOME.
+func (p *Policy) abs(path string) string {
+	path = p.expandHome(path)
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(p.Cwd, path)
+	}
+	return filepath.Clean(path)
+}
+
+func (p *Policy) expandHome(path string) string {
+	for _, prefix := range []string{"~", "$HOME", "${HOME}"} {
+		if path == prefix {
+			return p.Home
+		}
+		if strings.HasPrefix(path, prefix+"/") {
+			return filepath.Join(p.Home, path[len(prefix)+1:])
+		}
+	}
+	return path
+}
+
+// inRepo — лежит ли абсолютный путь внутри репозитория.
+func (p *Policy) inRepo(abs string) bool {
+	return isWithin(p.Root, abs)
+}
+
+func isWithin(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// rel — путь относительно корня в формате a/b/c (для glob-шаблонов).
+func (p *Policy) rel(abs string) string {
+	r, err := filepath.Rel(p.Root, abs)
+	if err != nil {
+		return abs
+	}
+	return filepath.ToSlash(r)
+}
+
+// IsSensitive — файл с секретами: .env, *.pem, приватные SSH-ключи.
+func IsSensitive(path string) bool {
+	base := filepath.Base(path)
+	switch base {
+	case ".env", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519":
+		return true
+	case ".env.example", ".env.sample", ".env.template", ".env.dist":
+		return false
+	}
+	return strings.HasPrefix(base, ".env.") || strings.HasSuffix(base, ".pem")
+}
+
+func (p *Policy) checkSensitive(abs string) Verdict {
+	if !IsSensitive(abs) {
+		return allowVerdict
+	}
+	return Verdict{Deny, "secret-file", fmt.Sprintf(
+		"доступ к файлу с секретами (%s) запрещён. Если нужна конфигурация — читайте .env.example или попросите пользователя назвать нужные переменные", filepath.Base(abs))}
+}
+
+// checkWritePath — запись/изменение файла: синхронизированные запреты
+// и защищённые папки из конфига.
+func (p *Policy) checkWritePath(abs string) Verdict {
+	if !p.inRepo(abs) {
+		return allowVerdict
+	}
+	rel := p.rel(abs)
+	for _, r := range p.cfg.Synced.Rules {
+		if r.Kind == config.KindDenyPath && p.match(r.Pattern, rel) {
+			return Verdict{Deny, "synced-deny-path", fmt.Sprintf(
+				"правка %s запрещена правилом из %s (%s). Не изменяйте эти файлы; если это необходимо — спросите пользователя", rel, r.Source, r.Pattern)}
+		}
+	}
+	for _, r := range p.cfg.Synced.Rules {
+		if r.Kind == config.KindAskPath && p.match(r.Pattern, rel) {
+			return Verdict{Ask, "synced-ask-path", fmt.Sprintf("правка %s требует подтверждения (правило %s из %s)", rel, r.Pattern, r.Source)}
+		}
+	}
+	for _, pat := range p.cfg.ProtectedPaths {
+		if p.match(pat, rel) {
+			return Verdict{Ask, "protected-path", fmt.Sprintf("%s в защищённой папке (%s): нужно подтверждение пользователя", rel, pat)}
+		}
+	}
+	return allowVerdict
+}
+
+// match сопоставляет путь (относительно корня) с glob-шаблоном.
+//   - "**" — любое число папок, "*" — любое имя в пределах одной папки;
+//   - шаблон без '*' совпадает с самим путём и со всем, что внутри него;
+//   - шаблон без '/' (например, "*.sql") проверяется и по имени файла.
+func (p *Policy) match(pattern, rel string) bool {
+	pattern = strings.TrimPrefix(strings.TrimSpace(pattern), "./")
+	if pattern == "" {
+		return false
+	}
+	if !strings.ContainsAny(pattern, "*?[") {
+		pattern = strings.TrimSuffix(pattern, "/")
+		return rel == pattern || strings.HasPrefix(rel, pattern+"/")
+	}
+	re := p.globRegexp(pattern)
+	if re.MatchString(rel) {
+		return true
+	}
+	if !strings.Contains(pattern, "/") {
+		return re.MatchString(filepath.Base(rel))
+	}
+	return false
+}
+
+func (p *Policy) globRegexp(pattern string) *regexp.Regexp {
+	p.globMu.Lock()
+	defer p.globMu.Unlock()
+	if re, ok := p.globCache[pattern]; ok {
+		return re
+	}
+	re := regexp.MustCompile(GlobToRegexp(pattern))
+	p.globCache[pattern] = re
+	return re
+}
+
+// GlobToRegexp переводит glob в регулярное выражение.
+func GlobToRegexp(pattern string) string {
+	var b strings.Builder
+	b.WriteString("^")
+	for i := 0; i < len(pattern); i++ {
+		c := pattern[i]
+		switch {
+		case c == '*' && i+1 < len(pattern) && pattern[i+1] == '*':
+			i++
+			if i+1 < len(pattern) && pattern[i+1] == '/' {
+				i++
+				b.WriteString("(?:.*/)?") // "**/" — ноль или больше папок
+			} else {
+				b.WriteString(".*")
+			}
+		case c == '*':
+			b.WriteString("[^/]*")
+		case c == '?':
+			b.WriteString("[^/]")
+		default:
+			b.WriteString(regexp.QuoteMeta(string(c)))
+		}
+	}
+	// "migrations/**" совпадает и с самой папкой "migrations".
+	s := b.String()
+	if strings.HasSuffix(s, "/.*") {
+		s = strings.TrimSuffix(s, "/.*") + "(?:/.*)?"
+	}
+	return s + "$"
+}

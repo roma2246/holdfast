@@ -1,0 +1,159 @@
+# Holdfast
+
+**Линтер инструкций и предохранитель для ИИ-агентов** (Claude Code, Cursor, Codex и др.).
+
+- `holdfast lint` находит в `CLAUDE.md` / `AGENTS.md` / `.cursorrules` битые пути,
+  несуществующие команды, противоречия, дубли, секреты и лишний текст.
+- `holdfast guard` встраивается в Claude Code как PreToolUse-хук и блокирует
+  `rm -rf ~`, `git push --force`, `curl | sh`, чтение `.env` и правки защищённых папок.
+  Перед сессией делает снапшот рабочего дерева и умеет откатить всё, что сделал агент.
+- `holdfast sync` превращает запреты из `CLAUDE.md` в проверяемые правила guard:
+  инструкция перестаёт быть просьбой.
+
+Один статический бинарник без зависимостей, хук отвечает за ~50 мкс (≈3 мс вместе со стартом процесса).
+
+![demo](docs/demo.gif)
+
+> Гифка записывается командой `vhs docs/demo.tape` (нужен [VHS](https://github.com/charmbracelet/vhs)).
+
+## Установка
+
+```bash
+go install github.com/roma2246/holdfast/cmd/holdfast@latest
+```
+
+```bash
+brew install --cask roma2246/tap/holdfast
+```
+
+Или скачайте архив под свою ОС со страницы [Releases](https://github.com/roma2246/holdfast/releases).
+
+## Быстрый старт
+
+```bash
+cd my-project
+holdfast init            # создаёт holdfast.toml
+holdfast lint            # проверяет CLAUDE.md / AGENTS.md / .cursorrules
+holdfast guard install   # подключает хук к Claude Code (.claude/settings.json)
+holdfast guard start     # снапшот перед сессией агента
+# ... работа агента ...
+holdfast guard diff      # что изменилось с момента снапшота
+holdfast guard rollback  # откатить всё (с подтверждением)
+holdfast guard log       # что агенту разрешили и что заблокировали
+```
+
+## lint
+
+```
+$ holdfast lint
+CLAUDE.md:3   HF001 error    путь «src/server/» не существует
+CLAUDE.md:8   HF004 warning  противоречие: «use yarn» (строка 7) и «never use yarn»
+CLAUDE.md:15  HF002 error    «npm run e2e» — скрипта e2e нет в package.json
+    ↳ агент запустит несуществующую команду; обновите инструкцию
+```
+
+| ID    | Что проверяет                                                                 | Уровень |
+|-------|-------------------------------------------------------------------------------|---------|
+| HF001 | Путь из текста (`src/api/`, `docs/setup.md`) не существует                     | error   |
+| HF002 | `npm run X` / `make X` / `just X` нет в package.json / Makefile / justfile     | error   |
+| HF003 | Файл больше лимита (по умолчанию 2000 токенов ≈ символы / 4)                   | warning |
+| HF004 | Противоречие: «use yarn» и «never use yarn»                                    | warning |
+| HF005 | Дубли и почти одинаковые пункты (мера Жаккара по словам > 90%)                 | warning |
+| HF006 | Похоже на секрет: API-ключ, токен, пароль                                      | error   |
+| HF007 | Расплывчатые инструкции («write good code», «пиши чисто»)                      | info    |
+| HF008 | Нет секции с командами сборки и тестов                                         | info    |
+| HF009 | В инструкции есть запрет, которого нет в политике guard (запустите `sync`)     | warning |
+
+Все проверки локальные, без вызовов LLM. Файлы проверяются параллельно.
+
+- `--format json` — машиночитаемый отчёт для CI.
+- `--strict` — warning тоже считается ошибкой.
+- Коды выхода: `0` — нет ошибок, `1` — есть error, `2` — сбой самого инструмента.
+- Выключить правило: `disable = ["HF007"]` в `holdfast.toml`,
+  `<!-- holdfast-disable HF003 -->` на весь файл или
+  `<!-- holdfast-disable-next-line HF001 -->` на следующую строку.
+
+## guard
+
+`holdfast guard install` добавляет в `.claude/settings.json` (не затирая остальное):
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [{
+      "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|Read",
+      "hooks": [{ "type": "command", "command": "holdfast guard check", "timeout": 10 }]
+    }]
+  }
+}
+```
+
+Перед каждым вызовом инструмента Claude Code передаёт хуку JSON, а хук отвечает
+`deny` (с причиной, чтобы агент выбрал другой путь), `ask` (спросить пользователя)
+или молчит — тогда работает обычная проверка разрешений Claude Code.
+
+Команды разбираются настоящим парсером bash ([mvdan.cc/sh](https://github.com/mvdan/sh)),
+а не поиском подстроки: проверяется каждая простая команда в цепочках `&&`, `;`, `|`,
+подстановках `$(...)`, `<(...)`, `bash -c "..."`, `eval`, функциях и циклах,
+учитываются `sudo`/`env`/`timeout`/`xargs` и смена папки через `cd`.
+`echo "rm -rf /"` — безопасный echo, а `ls && rm -rf ~` — запрет.
+
+**Политика по умолчанию**
+
+| Решение   | Что                                                                                                     |
+|-----------|---------------------------------------------------------------------------------------------------------|
+| запретить | `rm -r` на `/`, `~`, весь репозиторий или пути вне него; `git push --force`; `git reset --hard`; `curl … \| sh`; чтение и запись `.env`, `*.pem`, `id_rsa` |
+| спросить  | `git push`, `npm publish`, `git clean -f`, удаление больше `max_deletes` файлов, `find -delete`, правки в `protected_paths` |
+| разрешить | всё остальное                                                                                            |
+
+Хук никогда не падает: при внутренней ошибке он отвечает «спросить» и пишет об этом в журнал.
+Журнал — `.holdfast/log.jsonl` (папка сама себя исключает из git).
+
+**Снапшоты.** `guard start` сохраняет рабочее дерево — включая неотслеживаемые файлы —
+в `refs/holdfast/<время>` через временный git-индекс. Ваши ветки, stash и индекс не меняются.
+`guard rollback` перед откатом сохраняет текущее состояние в `refs/holdfast-backup/`,
+так что и откат можно отменить. Файлы из `.gitignore` не трогаются.
+
+## sync
+
+```markdown
+<!-- holdfast
+deny-paths: migrations/**, .github/workflows/**
+ask-commands: docker compose down
+-->
+```
+
+`holdfast sync` переносит такие блоки в секцию `[guard.synced]` файла `holdfast.toml`
+с указанием строки-источника. Ключи: `deny-paths`, `ask-paths`, `deny-commands`, `ask-commands`.
+
+Фразы в тексте — «never edit `migrations/`», «don't touch generated/», «не трогай `vendor/`»,
+«never run `make deploy`» — находятся эвристически: sync покажет их списком и добавит
+только подтверждённые (`--yes` — принять все, `--no-heuristics` — только явные блоки,
+`--dry-run` — ничего не записывать).
+
+## Конфигурация
+
+```toml
+[lint]
+files = ["CLAUDE.md", "AGENTS.md", ".cursorrules"]
+max_tokens = 2000
+disable = ["HF007"]
+
+[guard]
+protected_paths = ["migrations/**"]   # ** — любая глубина, * — в пределах папки
+deny_commands = ["git push --force"]  # слова шаблона ищутся в команде по порядку
+ask_commands = ["git push", "npm publish"]
+max_deletes = 5
+```
+
+## Разработка
+
+```bash
+go build ./...
+go test ./...
+golangci-lint run ./...
+go test -bench=BenchmarkHook -run='^$' ./internal/guard/
+goreleaser build --snapshot --clean
+```
+
+Структура и соглашения — в [CLAUDE.md](CLAUDE.md).

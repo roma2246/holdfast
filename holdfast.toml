@@ -1,0 +1,38 @@
+# Конфигурация Holdfast. Документация: README.md
+
+[lint]
+# Файлы инструкций агента, которые проверяет holdfast lint.
+files = ["CLAUDE.md", "AGENTS.md", ".cursorrules"]
+# Лимит размера файла (токены считаются как символы / 4).
+max_tokens = 2000
+# Выключенные правила, например ["HF007"].
+disable = []
+
+[guard]
+# Правки в этих путях требуют подтверждения (glob, ** — любая глубина).
+protected_paths = []
+# Команды, которые всегда запрещены (сверх встроенной политики).
+deny_commands = ["git push --force"]
+# Команды, перед которыми агент должен спросить разрешения.
+ask_commands = ["git push", "npm publish"]
+# Удаление большего числа файлов одной командой требует подтверждения.
+max_deletes = 5
+
+# --- holdfast sync: секция генерируется автоматически, не редактируйте ---
+[[guard.synced.rules]]
+kind = "deny-path"
+pattern = "go.sum"
+source = "CLAUDE.md:39"
+origin = "explicit"
+
+[[guard.synced.rules]]
+kind = "ask-command"
+pattern = "goreleaser release"
+source = "CLAUDE.md:40"
+origin = "explicit"
+
+[[guard.synced.rules]]
+kind = "ask-command"
+pattern = "git tag"
+source = "CLAUDE.md:40"
+origin = "explicit"

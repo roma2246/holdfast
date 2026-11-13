@@ -1,0 +1,5 @@
+# Project
+
+## Commands
+
+- `go test ./...`

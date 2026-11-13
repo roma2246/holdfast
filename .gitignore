@@ -1,0 +1,6 @@
+/holdfast
+/holdfast.exe
+/dist/
+cover.out
+*.test
+.holdfast/

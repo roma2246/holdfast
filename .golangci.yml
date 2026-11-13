@@ -1,0 +1,29 @@
+version: "2"
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - misspell
+    - unconvert
+    - errorlint
+    - gocritic
+  settings:
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+  exclusions:
+    presets:
+      - std-error-handling # defer f.Close(), fmt.Fprint* и т.п.
+    rules:
+      # В тестах подготовка фикстур не обязана проверять каждую ошибку.
+      - path: _test\.go
+        linters: [errcheck]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/roma2246/holdfast

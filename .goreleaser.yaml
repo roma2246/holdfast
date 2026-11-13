@@ -1,0 +1,47 @@
+# Документация: https://goreleaser.com
+version: 2
+
+project_name: holdfast
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - main: ./cmd/holdfast
+    binary: holdfast
+    env:
+      - CGO_ENABLED=0 # статический бинарник без зависимостей
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files: [README.md]
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude: ["^docs:", "^test:", "^chore:"]
+
+homebrew_casks:
+  - name: holdfast
+    repository:
+      owner: roma2246
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    homepage: https://github.com/roma2246/holdfast
+    description: Линтер CLAUDE.md/AGENTS.md и предохранитель для ИИ-агентов
+    skip_upload: auto # пре-релизы не публикуются в tap
