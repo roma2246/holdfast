@@ -10,11 +10,11 @@ permissions:
 
 jobs:
   test:
-    strategy:
-      matrix:
-        # Политика guard рассчитана на POSIX-пути; под Windows пока только сборка.
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    # macOS-раннеры для приватных репозиториев дефицитны (очередь, прерванные
+    # запуски) и расходуют минуты в 10 раз быстрее. Тесты гоняем на Linux,
+    # а сборку под darwin проверяет goreleaser-check.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -25,19 +25,18 @@ jobs:
       - name: Test
         run: go test -race -coverpkg=./internal/... -coverprofile=cover.out ./...
       - name: Coverage >= 80%
-        if: runner.os == 'Linux'
         run: |
           total=$(go tool cover -func=cover.out | awk '/^total:/ {print substr($3, 1, length($3)-1)}')
           echo "coverage: ${total}%"
           awk -v t="$total" 'BEGIN { exit (t < 80) }'
       - name: Hook benchmark
-        if: runner.os == 'Linux'
         run: go test -bench=BenchmarkHook -run='^$' ./internal/guard/
       - name: Dogfood lint
         run: go run ./cmd/holdfast lint --strict
 
   windows-build:
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -48,6 +47,7 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -59,6 +59,7 @@ jobs:
 
   goreleaser-check:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

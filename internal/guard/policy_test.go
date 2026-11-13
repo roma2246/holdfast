@@ -388,7 +388,7 @@ func TestAutonomousMode(t *testing.T) {
 		// Временные папки — свободно, но не сама /tmp.
 		{"rm в /tmp", feature, "rm /tmp/scratch.txt", Allow, ""},
 		{"rm -rf в /tmp", feature, "rm -rf /tmp/build-cache", Allow, ""},
-		{"rm -rf /tmp", feature, "rm -rf /tmp", Deny, "rm-outside-repo"},
+		{"rm -rf /tmp", feature, "rm -rf /tmp", Deny, "*"}, // на Linux /tmp содержит сам тестовый репозиторий
 
 		// Необратимое — как раньше.
 		{"rm -rf ~", feature, "rm -rf ~", Deny, "rm-home"},
@@ -403,7 +403,7 @@ func TestAutonomousMode(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := tt.p.CheckCommand(tt.cmd)
-			if got.Decision != tt.want || got.Rule != tt.rule {
+			if got.Decision != tt.want || (got.Rule != tt.rule && tt.rule != "*") {
 				t.Fatalf("%q = %s [%s: %s], want %s [%s]", tt.cmd, got.Decision, got.Rule, got.Reason, tt.want, tt.rule)
 			}
 			// Запрет в autonomous всегда объясняет, что делать вместо.
@@ -436,5 +436,30 @@ func TestGitFS(t *testing.T) {
 	}
 	if currentBranch(t.TempDir()) != "" || hasSnapshot(t.TempDir()) || refExists(t.TempDir(), "x") {
 		t.Error("вне git должно быть пусто")
+	}
+}
+
+// Проект во временной папке (обычное дело на CI): разрешение «удалять в
+// /tmp» не должно открывать удаление самого проекта или его родителя.
+func TestRepoInsideTempDir(t *testing.T) {
+	parent := t.TempDir() // на macOS — /var/folders/..., на Linux — /tmp/...
+	root := filepath.Join(parent, "project")
+	os.MkdirAll(filepath.Join(root, "src"), 0o755)
+	os.WriteFile(filepath.Join(root, "src", "a.go"), nil, 0o644)
+	p := autoPolicy(t, root)
+	for _, tt := range []struct {
+		cmd  string
+		want Decision
+	}{
+		{"rm -rf .", Deny},
+		{"rm -rf " + root, Deny},
+		{"rm -rf " + parent, Deny},
+		{"rm -rf ..", Deny},
+		{"rm -rf src", Allow},
+		{"rm -rf " + filepath.Join(parent, "other"), Allow}, // соседняя временная папка
+	} {
+		if got := p.CheckCommand(tt.cmd); got.Decision != tt.want {
+			t.Errorf("%q = %s (%s), want %s", tt.cmd, got.Decision, got.Rule, tt.want)
+		}
 	}
 }

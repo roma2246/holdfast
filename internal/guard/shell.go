@@ -446,14 +446,16 @@ func (p *Policy) checkRm(args []word, viaXargs bool) Verdict {
 		}
 
 		switch {
-		case !p.cfg.Strict() && isTempPath(base):
-			// временные файлы: удаляем без вопросов
 		case recursive && (base == "/" || base == filepath.Dir(base)):
 			return Verdict{Deny, "rm-root", "rm -r на корень файловой системы запрещён"}
 		case recursive && (base == p.Home || isWithin(base, p.Home)):
 			return Verdict{Deny, "rm-home", "rm -r на домашнюю папку запрещён. Удаляйте конкретные файлы внутри проекта"}
-		case recursive && base == p.Root:
+		case recursive && (base == p.Root || isWithin(base, p.Root)):
+			// и сам репозиторий, и любая папка, которая его содержит
 			return Verdict{Deny, "rm-repo-root", "rm -r на весь репозиторий запрещён. Удаляйте конкретные файлы или папки"}
+		case !p.cfg.Strict() && !p.inRepo(base) && isTempPath(base):
+			// временные файлы вне проекта: удаляем без вопросов.
+			// Проверка идёт после repo-root: проект сам может лежать в /tmp.
 		case recursive && !p.inRepo(base):
 			return Verdict{Deny, "rm-outside-repo", fmt.Sprintf("rm -r вне репозитория (%s) запрещён. Работайте только с файлами проекта %s", base, p.Root)}
 		case !p.inRepo(base):
