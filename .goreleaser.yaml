@@ -45,4 +45,6 @@ homebrew_casks:
     homepage: https://github.com/roma2246/holdfast
     description: Линтер CLAUDE.md/AGENTS.md и предохранитель для ИИ-агентов
     license: MIT
-    skip_upload: auto # пре-релизы не публикуются в tap
+    # Без токена tap-репозитория (секрет HOMEBREW_TAP_GITHUB_TOKEN) cask не
+    # публикуется, но релиз проходит; пре-релизы в tap не попадают никогда.
+    skip_upload: '{{ if isEnvSet "HOMEBREW_TAP_GITHUB_TOKEN" }}auto{{ else }}true{{ end }}'
