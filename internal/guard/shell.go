@@ -41,7 +41,7 @@ func (p *Policy) checkScript(src string, depth int) Verdict {
 	if depth > maxDepth {
 		return p.soft("too-deep", "слишком глубокая вложенность bash -c", "Разбей команду на несколько простых шагов")
 	}
-	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(src), "")
+	file, err := parseShell(src)
 	if err != nil {
 		return p.soft("parse-error", fmt.Sprintf("не удалось разобрать команду (%v)", err), "Перепиши команду в простом синтаксисе bash")
 	}
@@ -62,6 +62,20 @@ func (p *Policy) checkScript(src string, depth int) Verdict {
 		return true
 	})
 	return v
+}
+
+// parseShell разбирает команду как bash, а если не вышло — как zsh: на macOS
+// команды агента выполняет zsh, и агент пишет, например, ${(P)var}.
+// Поддержка zsh в mvdan.cc/sh экспериментальная, поэтому она — запасной путь.
+func parseShell(src string) (*syntax.File, error) {
+	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(src), "")
+	if err == nil {
+		return file, nil
+	}
+	if zfile, zerr := syntax.NewParser(syntax.Variant(syntax.LangZsh)).Parse(strings.NewReader(src), ""); zerr == nil {
+		return zfile, nil
+	}
+	return nil, err // показываем ошибку bash — она понятнее агенту
 }
 
 // word — аргумент команды после разбора кавычек.
@@ -201,10 +215,13 @@ func (p *Policy) checkCall(c *syntax.CallExpr, depth int) Verdict {
 	name := filepath.Base(args[0].s)
 	v := allowVerdict
 
-	// Любое упоминание файла с секретами в аргументах.
-	for _, a := range args[1:] {
-		if !a.dynamic {
-			v = worst(v, p.checkSensitive(p.abs(a.s)))
+	// Любое упоминание файла с секретами в аргументах — кроме команд,
+	// которые смотрят только на сам файл, а не на его содержимое.
+	if !metadataOnly(name, args[1:]) {
+		for _, a := range args[1:] {
+			if !a.dynamic {
+				v = worst(v, p.checkSensitive(p.abs(a.s)))
+			}
 		}
 	}
 
@@ -233,6 +250,50 @@ func (p *Policy) checkCall(c *syntax.CallExpr, depth int) Verdict {
 	v = worst(v, p.checkMutatingPaths(name, args[1:]))
 	v = worst(v, p.checkConfigured(args))
 	return v
+}
+
+// metadataCommands не читают содержимое файла: существует ли он, размер,
+// права, игнорируется ли git. Их можно применять и к .env.
+var metadataCommands = map[string]bool{
+	"ls": true, "stat": true, "test": true, "[": true, "file": true, "du": true,
+	"realpath": true, "readlink": true, "basename": true, "dirname": true, "chmod": true,
+}
+
+var metadataGitCommands = map[string]bool{"check-ignore": true, "ls-files": true, "status": true}
+
+func metadataOnly(name string, args []word) bool {
+	if name == "git" {
+		sub, _, _, _ := gitSubcommand(args, "", false)
+		return metadataGitCommands[sub]
+	}
+	return metadataCommands[name]
+}
+
+// gitSubcommand пропускает глобальные опции git (-C dir, -c key=val, ...)
+// и возвращает подкоманду, её аргументы и папку, в которой выполнится git.
+func gitSubcommand(args []word, dir string, unknown bool) (sub string, rest []word, outDir string, dirUnknown bool) {
+	for len(args) > 0 && strings.HasPrefix(args[0].s, "-") {
+		opt := args[0].s
+		if (opt == "-C" || opt == "-c" || opt == "--git-dir" || opt == "--work-tree") && len(args) > 1 {
+			if opt == "-C" {
+				switch val := args[1]; {
+				case val.dynamic:
+					unknown = true
+				case filepath.IsAbs(val.s):
+					dir, unknown = val.s, false
+				default:
+					dir = filepath.Join(dir, val.s)
+				}
+			}
+			args = args[2:]
+			continue
+		}
+		args = args[1:]
+	}
+	if len(args) == 0 {
+		return "", nil, dir, unknown
+	}
+	return args[0].s, args[1:], dir, unknown
 }
 
 func hasArg(args []word, s string) bool {
@@ -292,6 +353,45 @@ func containsDownloader(n syntax.Node) bool {
 	return found
 }
 
+// readsProgramFromStdin — выполнит ли интерпретатор код из stdin.
+// `curl … | sh` и `curl … | python3` — да (опасно); а в `curl … | python3 -c '…'`
+// или `curl … | node script.js` скачанное — только данные, код свой.
+func readsProgramFromStdin(name string, args []word) bool {
+	// Флаги, после которых идёт значение, а не имя скрипта.
+	withValue := map[string]bool{"-W": true, "-X": true, "-o": true, "-O": true, "-r": true, "--require": true}
+	for i := 0; i < len(args); i++ {
+		s := args[i].s
+		switch {
+		case s == "-":
+			return true // явное «программа из stdin»
+		case s == "--":
+			return i+1 >= len(args)
+		case strings.HasPrefix(s, "--"):
+			if s == "--eval" || s == "--print" || s == "--command" {
+				return false
+			}
+		case strings.HasPrefix(s, "-"):
+			flags := s[1:]
+			switch {
+			case shells[name] && strings.Contains(flags, "c"):
+				return false // sh -c '…': код в аргументе
+			case shells[name] && strings.Contains(flags, "s"):
+				return true // bash -s: код из stdin
+			case (name == "python" || name == "python3") && (strings.HasPrefix(flags, "c") || strings.HasPrefix(flags, "m")):
+				return false // python -c '…' / python -m модуль
+			case !shells[name] && name != "python" && name != "python3" && strings.ContainsAny(flags, "eEp"):
+				return false // perl -e / -ne, ruby -e, node -e / -p
+			}
+			if withValue[s] {
+				i++
+			}
+		default:
+			return false // первый позиционный аргумент — файл скрипта
+		}
+	}
+	return true // скрипта нет — код читается из stdin
+}
+
 // checkPipe ищет «скачать | выполнить»: curl ... | sh, wget -O- | sudo bash.
 func (p *Policy) checkPipe(b *syntax.BinaryCmd) Verdict {
 	var stmts []*syntax.Stmt
@@ -314,7 +414,7 @@ func (p *Policy) checkPipe(b *syntax.BinaryCmd) Verdict {
 				args, _ := stripWrappers(callWords(c))
 				if len(args) > 0 {
 					name := filepath.Base(args[0].s)
-					if shells[name] || interpreters[name] {
+					if (shells[name] || interpreters[name]) && readsProgramFromStdin(name, args[1:]) {
 						return curlPipeVerdict()
 					}
 				}
@@ -514,21 +614,14 @@ func (p *Policy) countTargets(abs string, recursive bool, limit int) int {
 
 // checkGit: push --force и reset --hard — запрет, обычный push — спросить.
 func (p *Policy) checkGit(args []word) Verdict {
-	// Пропускаем глобальные опции git: -C dir, -c key=val, --git-dir=...
-	for len(args) > 0 && strings.HasPrefix(args[0].s, "-") {
-		if (args[0].s == "-C" || args[0].s == "-c" || args[0].s == "--git-dir" || args[0].s == "--work-tree") && len(args) > 1 {
-			args = args[2:]
-			continue
-		}
-		args = args[1:]
-	}
-	if len(args) == 0 {
+	// Папка, где выполнится git: текущая (с учётом cd) и -C из команды.
+	sub, rest, dir, dirUnknown := gitSubcommand(args, p.Cwd, p.cwdUnknown)
+	if sub == "" {
 		return allowVerdict
 	}
-	sub, rest := args[0].s, args[1:]
 	switch sub {
 	case "push":
-		return p.checkPush(rest)
+		return p.checkPush(rest, p.abs(dir), dirUnknown)
 	case "reset":
 		if hasArg(rest, "--hard") {
 			return Verdict{Deny, "git-reset-hard", "git reset --hard безвозвратно стирает незакоммиченные изменения. Используй git stash или git restore <файл> для конкретных файлов"}
@@ -555,9 +648,11 @@ func (p *Policy) checkGit(args []word) Verdict {
 	return allowVerdict
 }
 
-// checkPush: force-push запрещён всегда. В autonomous обычный push в свою
-// ветку разрешён, а в защищённые ветки (main) — запрещён с подсказкой.
-func (p *Policy) checkPush(args []word) Verdict {
+// checkPush: force-push, удаление веток и теги запрещены в любом репозитории.
+// Защищённые ветки (main) — настройка проекта: она действует только для
+// репозитория проекта, а не для любого репозитория на диске, где агент
+// выполнил cd. Ветку читаем у того репозитория, где реально идёт push.
+func (p *Policy) checkPush(args []word, dir string, dirUnknown bool) Verdict {
 	withValue := map[string]bool{"--repo": true, "-o": true, "--push-option": true, "--receive-pack": true, "--exec": true}
 	var positional []string
 	deleting, tags, all := false, false, false
@@ -603,7 +698,17 @@ func (p *Policy) checkPush(args []word) Verdict {
 		return Verdict{Deny, "git-push-all", "push всех веток сразу запрещён. Запушь только свою рабочую ветку: git push origin <ветка>"}
 	}
 
-	cur := currentBranch(p.Root)
+	if dirUnknown {
+		return p.soft("git-push-branch", "не удалось определить, из какого репозитория push (cd на переменную)",
+			"Укажи путь явно: git -C <путь> push origin <ветка>")
+	}
+	repo := findGitRoot(dir)
+	if repo == "" {
+		return allowVerdict // не git-репозиторий: git сам сообщит об ошибке
+	}
+	projectRepo := isWithin(p.Root, repo) || isWithin(repo, p.Root)
+
+	cur := currentBranch(repo)
 	var targets []string
 	if len(refspecs) == 0 {
 		targets = []string{cur}
@@ -616,10 +721,13 @@ func (p *Policy) checkPush(args []word) Verdict {
 		if dst == "HEAD" {
 			dst = cur
 		}
-		if strings.HasPrefix(dst, "refs/tags/") || (dst != "" && refExists(p.Root, "refs/tags/"+dst)) {
+		if strings.HasPrefix(dst, "refs/tags/") || (dst != "" && refExists(repo, "refs/tags/"+dst)) {
 			return Verdict{Deny, "git-push-tags", "push тегов обычно запускает релиз. Создай тег локально и предложи пользователю его запушить"}
 		}
 		targets = append(targets, strings.TrimPrefix(dst, "refs/heads/"))
+	}
+	if !projectRepo {
+		return allowVerdict // правила веток проекта к чужим репозиториям не применяем
 	}
 	for _, t := range targets {
 		if t == "" {

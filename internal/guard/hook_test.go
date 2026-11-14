@@ -43,7 +43,7 @@ func TestRunHook(t *testing.T) {
 		decision string // "" — хук ничего не выводит (allow)
 	}{
 		{"deny rm home", "Bash", map[string]any{"command": "ls && rm -rf ~"}, "deny"},
-		{"push без git-репозитория", "Bash", map[string]any{"command": "git push"}, "deny"},
+		{"push без git-репозитория", "Bash", map[string]any{"command": "git push"}, ""}, // git сам сообщит об ошибке
 		{"allow ls", "Bash", map[string]any{"command": "ls"}, ""},
 		{"deny edit env", "Edit", map[string]any{"file_path": filepath.Join(root, ".env")}, "deny"},
 		{"deny write pem", "Write", map[string]any{"file_path": filepath.Join(root, "k.pem"), "content": "x"}, "deny"},

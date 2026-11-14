@@ -33,6 +33,19 @@ func gitDir(root string) string {
 	return dir
 }
 
+// findGitRoot поднимается от dir вверх до папки, где есть .git.
+// "" — dir не внутри git-репозитория.
+func findGitRoot(dir string) string {
+	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
+		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
+			return d
+		}
+		if filepath.Dir(d) == d {
+			return ""
+		}
+	}
+}
+
 // commonDir — общая папка репозитория (для worktree refs лежат там).
 func commonDir(gd string) string {
 	data, err := os.ReadFile(filepath.Join(gd, "commondir"))

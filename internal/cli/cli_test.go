@@ -232,8 +232,7 @@ func TestGuardInstallCheckLog(t *testing.T) {
 	}
 
 	_, out, _ = run(t, "", "-C", dir, "guard", "log")
-	// В autonomous-режиме вне git-репозитория ветку не определить → deny с подсказкой.
-	for _, want := range []string{"deny", "rm-home", "git-push-branch", "allow", "ПРАВИЛО"} {
+	for _, want := range []string{"deny", "rm-home", "allow", "git push", "ПРАВИЛО"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("в журнале нет %q:\n%s", want, out)
 		}
@@ -248,7 +247,7 @@ func TestGuardInstallCheckLog(t *testing.T) {
 		t.Fatalf("подсказки нет в журнале:\n%s", out)
 	}
 	_, out, _ = run(t, "", "-C", dir, "guard", "log", "--decision", "allow", "--json")
-	if strings.Count(out, "\n") != 2 || !strings.Contains(out, `"ls"`) || !strings.Contains(out, `"context":["CLAUDE.md:1"]`) {
+	if strings.Count(out, "\n") != 3 || !strings.Contains(out, `"ls"`) || !strings.Contains(out, `"context":["CLAUDE.md:1"]`) {
 		t.Fatal(out)
 	}
 	_, out, _ = run(t, "", "-C", dir, "guard", "log", "-n", "1", "--json")
