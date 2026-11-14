@@ -216,7 +216,7 @@ func (p *Policy) checkWritePath(abs string) Verdict {
 	for _, r := range p.cfg.Synced.Rules {
 		if r.Kind == config.KindDenyPath && p.match(r.Pattern, rel) {
 			return Verdict{Deny, "synced-deny-path", fmt.Sprintf(
-				"правка %s запрещена правилом из %s (%s). Не изменяйте эти файлы; если это необходимо — спросите пользователя", rel, r.Source, r.Pattern)}
+				"правка %s запрещена правилом из %s (%s). Не меняй эти файлы; если правка необходима — опиши её пользователю", rel, r.Source, r.Pattern)}
 		}
 	}
 	for _, r := range p.cfg.Synced.Rules {

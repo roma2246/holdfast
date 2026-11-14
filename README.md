@@ -15,7 +15,7 @@
 
 ![demo](docs/demo.gif)
 
-> Гифка записывается командой `vhs docs/demo.tape` (нужен [VHS](https://github.com/charmbracelet/vhs)).
+> Перезаписать гифку: `./docs/demo/record.sh` — [VHS](https://github.com/charmbracelet/vhs) в Docker, на машине нужен только Docker. Сценарий — [docs/demo.tape](docs/demo.tape).
 
 ## Установка
 
@@ -179,3 +179,7 @@ goreleaser build --snapshot --clean
 ```
 
 Структура и соглашения — в [CLAUDE.md](CLAUDE.md).
+
+## Лицензия
+
+[MIT](LICENSE)

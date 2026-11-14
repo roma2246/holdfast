@@ -25,7 +25,7 @@ archives:
     format_overrides:
       - goos: windows
         formats: [zip]
-    files: [README.md]
+    files: [README.md, LICENSE]
 
 checksum:
   name_template: checksums.txt
@@ -44,4 +44,5 @@ homebrew_casks:
     directory: Casks
     homepage: https://github.com/roma2246/holdfast
     description: Линтер CLAUDE.md/AGENTS.md и предохранитель для ИИ-агентов
+    license: MIT
     skip_upload: auto # пре-релизы не публикуются в tap

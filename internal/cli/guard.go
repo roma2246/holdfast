@@ -3,11 +3,16 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
+	"github.com/charmbracelet/x/term"
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
 	"github.com/roma2246/holdfast/internal/guard"
@@ -232,7 +237,7 @@ func (a *app) guardLogCmd() *cobra.Command {
 				fmt.Fprintln(a.out, "Журнал пуст")
 				return nil
 			}
-			a.printLogTable(filtered)
+			a.printLogTable(root, filtered)
 			return nil
 		},
 	}
@@ -242,7 +247,8 @@ func (a *app) guardLogCmd() *cobra.Command {
 	return cmd
 }
 
-func (a *app) printLogTable(entries []guard.LogEntry) {
+func (a *app) printLogTable(root string, entries []guard.LogEntry) {
+	targetW, whyW := logColumnWidths(terminalWidth(a.out))
 	r := lipgloss.NewRenderer(a.out)
 	colors := map[string]lipgloss.Style{
 		"deny":  r.NewStyle().Foreground(lipgloss.Color("9")).Bold(true),
@@ -261,7 +267,8 @@ func (a *app) printLogTable(entries []guard.LogEntry) {
 		if len(e.Context) > 0 {
 			why = strings.TrimPrefix(why+" · подсказка: "+strings.Join(e.Context, ", "), " · ")
 		}
-		t.Row(e.Time.Local().Format("01-02 15:04:05"), e.Decision, e.Tool, truncate(e.Target, 48), truncate(why, 60))
+		t.Row(e.Time.Local().Format("01-02 15:04:05"), e.Decision, e.Tool,
+			truncate(relTarget(root, e.Target), targetW), truncate(why, whyW))
 	}
 	t.StyleFunc(func(row, col int) lipgloss.Style {
 		s := r.NewStyle().Padding(0, 1)
@@ -271,6 +278,44 @@ func (a *app) printLogTable(entries []guard.LogEntry) {
 		return s
 	})
 	fmt.Fprintln(a.out, t.Render())
+}
+
+// logColumnWidths делит ширину терминала между колонками «действие» и
+// «причина»; остальные колонки узкие и фиксированные. Без терминала
+// (вывод в файл или pipe) ширина не ограничена разумными значениями.
+func logColumnWidths(termWidth int) (target, why int) {
+	if termWidth <= 0 {
+		return 48, 60
+	}
+	// время 14 + решение 7 + инструмент 12 + отступы 5×2 + рамки 6
+	const fixed = 14 + 7 + 12 + 5*2 + 6
+	rest := max(termWidth-fixed-1, 24)
+	target = rest * 2 / 5
+	return target, rest - target
+}
+
+// terminalWidth — ширина терминала, 0 — если w не терминал.
+func terminalWidth(w io.Writer) int {
+	f, ok := w.(*os.File)
+	if !ok || !isatty.IsTerminal(f.Fd()) {
+		return 0
+	}
+	width, _, err := term.GetSize(f.Fd())
+	if err != nil {
+		return 0
+	}
+	return width
+}
+
+// relTarget показывает путь внутри проекта относительно его корня.
+func relTarget(root, target string) string {
+	if !filepath.IsAbs(target) {
+		return target
+	}
+	if rel, err := filepath.Rel(root, target); err == nil && !strings.HasPrefix(rel, "..") {
+		return rel
+	}
+	return target
 }
 
 // truncate обрезает строку по символам (не байтам) и убирает переводы строк.

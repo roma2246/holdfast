@@ -329,3 +329,27 @@ func TestTruncate(t *testing.T) {
 		t.Error(got)
 	}
 }
+
+func TestLogColumnWidths(t *testing.T) {
+	if tw, ww := logColumnWidths(0); tw != 48 || ww != 60 {
+		t.Errorf("без терминала: %d %d", tw, ww)
+	}
+	for _, width := range []int{80, 120, 200} {
+		tw, ww := logColumnWidths(width)
+		if total := 14 + 7 + 12 + 5*2 + 6 + tw + ww; total > width {
+			t.Errorf("ширина %d: таблица %d не помещается", width, total)
+		}
+	}
+	if tw, ww := logColumnWidths(30); tw+ww != 24 {
+		t.Errorf("узкий терминал: минимум 24, получено %d", tw+ww)
+	}
+	if got := relTarget("/repo", "/repo/src/a.go"); got != "src/a.go" {
+		t.Error(got)
+	}
+	if got := relTarget("/repo", "/etc/hosts"); got != "/etc/hosts" {
+		t.Error(got)
+	}
+	if got := relTarget("/repo", "ls -la"); got != "ls -la" {
+		t.Error(got)
+	}
+}
