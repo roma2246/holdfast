@@ -63,6 +63,9 @@ type Policy struct {
 	// touched — файлы, которые затрагивает действие (для подсказок агенту).
 	touched []string
 
+	// tempDirs — временные папки, где удалять можно без вопросов.
+	tempDirs []string
+
 	globMu    sync.Mutex
 	globCache map[string]*regexp.Regexp
 }
@@ -82,6 +85,7 @@ func NewPolicy(root, cwd string, cfg *config.GuardConfig) *Policy {
 	return &Policy{
 		Root: filepath.Clean(root), Cwd: filepath.Clean(cwd), Home: filepath.Clean(home),
 		cfg: cfg, globCache: map[string]*regexp.Regexp{},
+		tempDirs: []string{os.TempDir(), "/tmp", "/private/tmp", "/var/folders", "/private/var/folders"},
 	}
 }
 
@@ -193,8 +197,8 @@ func (p *Policy) checkSensitive(abs string) Verdict {
 
 // isTempPath — путь внутри временной папки (но не она сама). Агенты часто
 // работают во временных папках, удалять там можно без вопросов.
-func isTempPath(abs string) bool {
-	for _, dir := range []string{os.TempDir(), "/tmp", "/private/tmp", "/var/folders", "/private/var/folders"} {
+func (p *Policy) isTempPath(abs string) bool {
+	for _, dir := range p.tempDirs {
 		dir = filepath.Clean(dir)
 		if abs != dir && isWithin(dir, abs) {
 			return true

@@ -528,7 +528,7 @@ func (p *Policy) checkRm(args []word, viaXargs bool) Verdict {
 	}
 
 	v := allowVerdict
-	count := 0
+	count, otherCount := 0, 0 // файлы проекта и файлы в других репозиториях
 	for _, t := range targets {
 		relativeAfterUnknownCd := p.cwdUnknown && !filepath.IsAbs(p.expandHome(t.s))
 		if (t.dynamic && !strings.HasPrefix(t.s, "$HOME")) || relativeAfterUnknownCd {
@@ -553,21 +553,42 @@ func (p *Policy) checkRm(args []word, viaXargs bool) Verdict {
 		case recursive && (base == p.Root || isWithin(base, p.Root)):
 			// и сам репозиторий, и любая папка, которая его содержит
 			return Verdict{Deny, "rm-repo-root", "rm -r на весь репозиторий запрещён. Удаляй конкретные файлы или папки"}
-		case !p.cfg.Strict() && !p.inRepo(base) && isTempPath(base):
+		case !p.cfg.Strict() && !p.inRepo(base) && p.isTempPath(base):
 			// временные файлы вне проекта: удаляем без вопросов.
 			// Проверка идёт после repo-root: проект сам может лежать в /tmp.
+			continue
 		case recursive && !p.inRepo(base):
 			return Verdict{Deny, "rm-outside-repo", fmt.Sprintf("rm -r вне репозитория (%s) запрещён. Работай только с файлами проекта %s", base, p.Root)}
+		case !p.cfg.Strict() && !p.inRepo(base) && p.inOtherRepo(base):
+			// Отдельные файлы в другом git-репозитории (агент работает и там):
+			// можно, но массовое удаление — нет, снапшот проекта их не защищает.
+			otherCount += p.countTargets(abs, false, p.cfg.MaxDeletes+1-otherCount)
+			continue
 		case !p.inRepo(base):
 			v = worst(v, p.soft("rm-outside-repo", fmt.Sprintf("удаление файла вне репозитория (%s)", abs),
-				"Удаляй только файлы проекта или временные файлы в /tmp"))
+				"Удаляй только файлы проекта, отдельные файлы в git-репозиториях или временные файлы в /tmp"))
+			continue
 		}
 		count += p.countTargets(abs, recursive, p.cfg.MaxDeletes+1-count)
 	}
 	if count > p.cfg.MaxDeletes {
 		v = worst(v, p.reversible("mass-delete", fmt.Sprintf("удаление более %d файлов", p.cfg.MaxDeletes)))
 	}
+	if otherCount > p.cfg.MaxDeletes {
+		v = worst(v, p.soft("mass-delete", fmt.Sprintf("удаление более %d файлов вне проекта", p.cfg.MaxDeletes),
+			"Снапшот проекта эти файлы не защищает — удаляй по несколько файлов за раз"))
+	}
 	return v
+}
+
+// inOtherRepo — путь внутри какого-то git-репозитория (не проекта). Репозиторий
+// во всю домашнюю папку (~/.git для dotfiles) или выше не считается.
+func (p *Policy) inOtherRepo(path string) bool {
+	root := findGitRoot(path)
+	if root == "" || root == "/" || root == p.Home || isWithin(root, p.Home) {
+		return false
+	}
+	return true
 }
 
 // countTargets считает файлы, которые удалит rm, но не больше limit —

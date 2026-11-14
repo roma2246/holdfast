@@ -540,3 +540,51 @@ func TestLiveSessionFindings(t *testing.T) {
 		})
 	}
 }
+
+// Удаление отдельных файлов в других git-репозиториях (агент работает
+// не только в проекте) — можно; папки и массовое удаление — нет.
+func TestRmInOtherRepo(t *testing.T) {
+	project := fakeRepo(t, "ref: refs/heads/feature/x", false)
+	other := fakeRepo(t, "ref: refs/heads/main", false)
+	for i := 0; i < 8; i++ {
+		os.WriteFile(filepath.Join(other, "tmp"+string(rune('a'+i))+".html"), nil, 0o644)
+	}
+	notRepo := filepath.Join(t.TempDir(), "plain")
+	os.MkdirAll(notRepo, 0o755)
+	os.WriteFile(filepath.Join(notRepo, "x.txt"), nil, 0o644)
+
+	home := t.TempDir() // домашняя папка с ~/.git (dotfiles)
+	os.MkdirAll(filepath.Join(home, ".git"), 0o755)
+	os.WriteFile(filepath.Join(home, ".zshrc"), nil, 0o644)
+
+	p := autoPolicy(t, project)
+	p.Home = home
+	p.tempDirs = nil // фикстуры лежат во временной папке — отключаем это правило
+	strict := newTestPolicy(t)
+	strict.tempDirs = nil
+
+	tests := []struct {
+		p    *Policy
+		cmd  string
+		want Decision
+		rule string
+	}{
+		{p, "rm " + filepath.Join(other, "a.txt"), Allow, ""},
+		{p, "cd " + other + " && rm _preview.html a.txt", Allow, ""},
+		{p, "rm " + filepath.Join(other, "*.html"), Deny, "mass-delete"}, // 8 файлов > 5
+		{p, "rm -r " + filepath.Join(other, "build"), Deny, "rm-outside-repo"},
+		{p, "rm " + filepath.Join(other, ".env"), Deny, "secret-file"},
+		{p, "rm " + filepath.Join(home, ".zshrc"), Deny, "rm-outside-repo"},   // ~/.git не считается
+		{p, "rm /usr/local/other.txt", Deny, "rm-outside-repo"},               // не git
+		{p, "rm " + filepath.Join(notRepo, "x.txt"), Deny, "rm-outside-repo"}, // не git
+		{strict, "rm " + filepath.Join(other, "a.txt"), Ask, "rm-outside-repo"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			got := tt.p.CheckCommand(tt.cmd)
+			if got.Decision != tt.want || got.Rule != tt.rule {
+				t.Fatalf("%q = %s [%s: %s], want %s [%s]", tt.cmd, got.Decision, got.Rule, got.Reason, tt.want, tt.rule)
+			}
+		})
+	}
+}
