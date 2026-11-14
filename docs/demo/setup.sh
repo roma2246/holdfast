@@ -1,28 +1,36 @@
 #!/usr/bin/env bash
-# Готовит демо-проект во временной папке: CLAUDE.md с типичными проблемами,
-# миграции и git-репозиторий. Вызывается из docs/demo.tape через `source`.
+# Готовит демо-проект во временной папке и вспомогательные команды для
+# сценария. Вызывается из docs/demo.tape через `source`.
 demo=$(mktemp -d)/shop
-mkdir -p "$demo/migrations" "$demo/src"
+mkdir -p "$demo/lib" "$demo/assets" "$demo/migrations"
 cd "$demo" || return
 
 cat >CLAUDE.md <<'EOF'
 # Shop API
 
-Код API лежит в `src/server/`, документация — в docs/overview.md.
+Код API лежит в `src/server/`.
+
+## Commands
+
+- Запуск: `./start.sh`
+- Деплой: `make deploy`
 
 ## Rules
 
-- Use yarn for dependencies.
-- Never use yarn in CI scripts.
-- Write good code.
 - Never edit `migrations/` — они уже применены в продакшене.
 - Deploy token: ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789
-
-Run end-to-end tests with `npm run e2e`.
 EOF
-echo '{"scripts": {"test": "jest"}}' >package.json
+cat >start.sh <<'EOF'
+#!/usr/bin/env bash
+source lib/config.sh && source lib/cart.sh &&
+	echo "✓ shop запущен на порту $PORT" || { echo "✗ shop не запустился"; exit 1; }
+EOF
+chmod +x start.sh
+echo 'PORT=8080' >lib/config.sh
+echo 'cart_total() { echo 0; }' >lib/cart.sh
+printf 'test:\n\t./start.sh\n' >Makefile
 echo 'CREATE TABLE users (id INT);' >migrations/001_init.sql
-echo 'console.log("shop")' >src/index.js
+for i in 1 2 3 4 5 6; do echo "icon $i" >"assets/icon$i.svg"; done
 
 git init -q
 git checkout -q -b feature/cart
@@ -30,17 +38,30 @@ git add -A
 git -c user.name=demo -c user.email=demo@example.com commit -qm init
 export PS1='\[\e[1;34m\]shop\[\e[0m\] $ '
 
-# step N печатает подпись к сцене. VHS неправильно «набирает» кириллицу,
-# поэтому русский текст не печатается вручную, а выводится этой функцией,
-# которая заодно стирает свою строку с командой.
+# VHS неправильно «набирает» кириллицу, поэтому русский текст в сценарии не
+# печатается вручную: подписи и запрос пользователя выводят эти функции,
+# которые заодно стирают строку со своей командой.
+
+# step N — подпись к сцене.
 step() {
 	local msg
 	case $1 in
-	1) msg="1. Проверяем инструкции агента: локально, без LLM" ;;
-	2) msg="2. Агент ошибается: хук не просто запрещает, а подсказывает, как правильно" ;;
-	3) msg="3. Правило проекта приходит агенту в момент, когда он открывает файл" ;;
-	4) msg="4. Снапшот перед сессией и откат всего, что сделал агент" ;;
-	5) msg="5. Журнал: что агенту разрешили, что запретили и почему" ;;
+	1) msg="1. Подключаем Holdfast один раз. Проект работает" ;;
+	2) msg="2. Просим агента. Holdfast сам сохраняет точку восстановления" ;;
+	3) msg="3. Агент закончил, а запуск сломан" ;;
+	4) msg="4. Смотрим, что изменилось, и возвращаем как было" ;;
+	5) msg="5. А ещё: проверка инструкций агента" ;;
 	esac
 	printf '\e[1A\e[2K\e[1;35m# %s\e[0m\n' "$msg"
+}
+
+# ask — запрос пользователя к агенту. Отправляет хуку UserPromptSubmit тот же
+# JSON, что и Claude Code, поэтому точка восстановления создаётся по-настоящему.
+ask() {
+	local prompt="Переименуй cart в basket и убери лишнее"
+	jq -nc --arg cwd "$PWD" --arg p "$prompt" \
+		'{session_id: "demo", cwd: $cwd, hook_event_name: "UserPromptSubmit", prompt: $p}' |
+		CLAUDE_PROJECT_DIR=$PWD holdfast guard checkpoint
+	printf '\e[1A\e[2K\e[1mвы → агенту:\e[0m «%s»\n' "$prompt"
+	printf '\e[2mholdfast: точка восстановления сохранена\e[0m\n\n'
 }

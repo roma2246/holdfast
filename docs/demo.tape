@@ -1,5 +1,9 @@
 # Сценарий демо-гифки для README. Запись: ./docs/demo/record.sh
 # (VHS в Docker, https://github.com/charmbracelet/vhs)
+#
+# История: проект работает → просим агента → запуск сломан → смотрим точки
+# восстановления → откатываем → снова работает. Русские подписи выводят
+# функции step и ask из docs/demo/setup.sh (VHS путает кириллицу при наборе).
 
 Output docs/demo.gif
 
@@ -19,23 +23,29 @@ Type "step 1"
 Enter
 Show
 
-Type "holdfast lint"
+Type "holdfast guard install"
 Enter
-Sleep 6s
+Sleep 3s
+Type "./start.sh"
+Enter
+Sleep 2.5s
 
 Hide
 Type "clear"
 Enter
 Type "step 2"
 Enter
+Type "ask"
+Enter
 Show
-Type `agent bash "ls && rm -rf ~"`
-Enter
 Sleep 2.5s
-Type `agent bash "git push origin main"`
+Type `agent run "git push origin main"`
 Enter
-Sleep 3.5s
-Type `agent bash "git push -u origin feature/cart"`
+Sleep 4s
+Type `agent run "rm -r assets"`
+Enter
+Sleep 2s
+Type `agent run "mv lib/cart.sh lib/basket.sh"`
 Enter
 Sleep 2s
 
@@ -43,9 +53,9 @@ Hide
 Type "step 3"
 Enter
 Show
-Type "agent read migrations/001_init.sql"
+Type "./start.sh"
 Enter
-Sleep 4.5s
+Sleep 3.5s
 
 Hide
 Type "clear"
@@ -53,15 +63,18 @@ Enter
 Type "step 4"
 Enter
 Show
-Type "holdfast guard start"
+Type "holdfast guard list"
 Enter
-Sleep 1s
-Type "echo 'broken' > CLAUDE.md && rm package.json && holdfast guard diff --stat"
+Sleep 4.5s
+Type "holdfast guard rollback --to 1"
 Enter
-Sleep 3s
-Type "holdfast guard rollback --yes && git status --short && head -1 CLAUDE.md"
+Sleep 3.5s
+Type "y"
 Enter
-Sleep 4s
+Sleep 2.5s
+Type "./start.sh"
+Enter
+Sleep 3.5s
 
 Hide
 Type "clear"
@@ -69,6 +82,6 @@ Enter
 Type "step 5"
 Enter
 Show
-Type "holdfast guard log -n 4"
+Type "holdfast lint"
 Enter
-Sleep 6s
+Sleep 7s
