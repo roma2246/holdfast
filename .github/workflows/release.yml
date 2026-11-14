@@ -24,5 +24,6 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Токен с правом записи в репозиторий homebrew-tap.
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          # Токен с правом записи в репозиторий homebrew-tap
+          # (секрет репозитория HOMEBREW). Нет секрета — релиз выйдет без cask.
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW }}
