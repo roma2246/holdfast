@@ -8,6 +8,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 )
 
 // HookMatcher — инструменты, перед которыми вызывается хук.
@@ -47,6 +49,9 @@ func InstallHook(root string, local bool, bin string) (path string, changed bool
 	case !errors.Is(err, fs.ErrNotExist):
 		return path, false, err
 	}
+	if settings == nil {
+		settings = map[string]any{} // в файле было JSON-значение null
+	}
 
 	hooks, _ := settings["hooks"].(map[string]any) // «type assertion» с проверкой
 	if hooks == nil {
@@ -56,9 +61,9 @@ func InstallHook(root string, local bool, bin string) (path string, changed bool
 		event, matcher, command string
 		timeout                 int
 	}{
-		{"PreToolUse", HookMatcher, bin + " guard check", 10},
+		{"PreToolUse", HookMatcher, shellQuoteArg(bin) + " guard check", 10},
 		// Снимок большого репозитория может занять секунды — запас по времени.
-		{"UserPromptSubmit", "", bin + " guard checkpoint", 30},
+		{"UserPromptSubmit", "", shellQuoteArg(bin) + " guard checkpoint", 30},
 	} {
 		list, _ := hooks[h.event].([]any)
 		if hasHookCommand(list, h.command) {
@@ -86,6 +91,17 @@ func InstallHook(root string, local bool, bin string) (path string, changed bool
 		return path, false, err
 	}
 	return path, true, os.WriteFile(path, append(out, '\n'), 0o644)
+}
+
+var shellSafeRe = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,./-]+$`)
+
+// shellQuoteArg экранирует путь для команды хука: Claude Code запускает её
+// через shell, и путь с пробелом без кавычек распался бы на два слова.
+func shellQuoteArg(s string) string {
+	if shellSafeRe.MatchString(s) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func hasHookCommand(pre []any, command string) bool {

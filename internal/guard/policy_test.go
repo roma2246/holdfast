@@ -1,12 +1,9 @@
 package guard
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/roma2246/holdfast/internal/config"
 )
@@ -17,7 +14,8 @@ const fakeHome = "/home/tester"
 func newTestPolicy(t *testing.T) *Policy {
 	t.Helper()
 	root := t.TempDir()
-	for _, f := range []string{"README.md", "build/a.o", "build/b.o", "migrations/001.sql", "src/main.go"} {
+	for _, f := range []string{"README.md", "assets/a.png", "assets/b.png", "migrations/001.sql", "src/main.go",
+		"docs/1.md", "docs/2.md", "docs/3.md", "docs/4.md", "docs/5.md", "docs/6.md", ".git/HEAD"} {
 		p := filepath.Join(root, f)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
@@ -56,7 +54,7 @@ func TestCheckCommand(t *testing.T) {
 		{"go test ./...", Allow},
 		{"echo 'rm -rf /'", Allow}, // это строка для echo, а не команда
 		{`echo "git push --force"`, Allow},
-		{"rm -rf build", Allow},
+		{"rm -rf assets", Allow},
 		{"rm README.md", Allow},
 		{"git status && git diff", Allow},
 		{"git commit -m 'reset --hard'", Allow},
@@ -100,7 +98,7 @@ func TestCheckCommand(t *testing.T) {
 		{`bash -lc "cd / && rm -rf *"`, Deny},
 		{"cd ~ && rm -rf projects", Deny},
 		{"cd src && rm -rf ../..", Deny},
-		{"cd build && rm -rf *.o", Allow},
+		{"cd assets && rm -rf *.png", Allow},
 		{"cd $X && rm -rf stuff", Ask},
 		{"rm -rf *", Deny}, // весь репозиторий
 		{`eval "rm -rf /"`, Deny},
@@ -149,11 +147,14 @@ func TestCheckCommand(t *testing.T) {
 		// --- спросить ---
 		{"npm publish", Ask},
 		{"pnpm publish --access public", Ask},
-		{"rm a b c d e f", Ask},
+		{"rm docs/1.md docs/2.md docs/3.md docs/4.md docs/5.md docs/6.md", Ask},
+		{"rm a b c d e f", Allow}, // таких файлов нет — удалять нечего
 		{"rm -rf $DIR", Ask},
 		{`rm -rf "$(pwd)/build"`, Ask},
-		{"find . -name '*.log' -delete", Ask},
-		{"find . -name '*.tmp' -exec rm {} +", Ask},
+		{"find docs -type f -delete", Ask},
+		{"find . -delete", Deny}, // затронет .git
+		{"find . -name '*.md' -exec rm {} +", Ask},
+		{"find . -name '*.nothing' -delete", Allow}, // под фильтр ничего не подходит
 		{"ls | xargs rm -rf", Ask},
 		{"rm /tmp/file.txt", Ask},
 		{"echo 'unterminated", Ask},
@@ -185,14 +186,14 @@ func TestCheckCommand(t *testing.T) {
 
 func TestMassDeleteGlob(t *testing.T) {
 	p := newTestPolicy(t)
-	for i := 0; i < 7; i++ {
-		os.WriteFile(filepath.Join(p.Root, "build", string(rune('c'+i))+".o"), nil, 0o644)
+	if v := p.CheckCommand("rm docs/*.md"); v.Decision != Ask {
+		t.Errorf("rm docs/*.md (6 файлов) = %s, want ask", v.Decision)
 	}
-	if v := p.CheckCommand("rm build/*.o"); v.Decision != Ask {
-		t.Errorf("rm build/*.o (9 файлов) = %s, want ask", v.Decision)
+	if v := p.CheckCommand("rm -r docs"); v.Decision != Ask {
+		t.Errorf("rm -r docs (6 файлов) = %s, want ask", v.Decision)
 	}
-	if v := p.CheckCommand("rm -r build"); v.Decision != Ask {
-		t.Errorf("rm -r build (9 файлов) = %s, want ask", v.Decision)
+	if v := p.CheckCommand("rm docs/1.md docs/2.md"); v.Decision != Allow {
+		t.Errorf("два файла = %s, want allow", v.Decision)
 	}
 }
 
@@ -312,20 +313,15 @@ func shellQuote(s string) string {
 
 // fakeRepo создаёт «репозиторий» только из файлов .git, которые читает хук:
 // HEAD (текущая ветка), тег и, по желанию, снапшот holdfast.
-func fakeRepo(t *testing.T, head string, snapshot bool) string {
+func fakeRepo(t *testing.T, head string) string {
 	t.Helper()
 	root := t.TempDir()
 	files := map[string]string{
 		".git/HEAD":           head + "\n",
 		".git/refs/tags/v1.0": "0000000000000000000000000000000000000000\n",
 		"a.txt":               "a",
-		"build/1.o":           "", "build/2.o": "", "build/3.o": "", "build/4.o": "", "build/5.o": "", "build/6.o": "",
+		"assets/1.png":        "", "assets/2.png": "", "assets/3.png": "", "assets/4.png": "", "assets/5.png": "", "assets/6.png": "",
 		"migrations/001_init.sql": "x",
-	}
-	if snapshot {
-		files[".git/refs/holdfast/20261113-120000-000"] = "0000000000000000000000000000000000000000\n"
-		mark, _ := json.Marshal(snapshotMark{Ref: "refs/holdfast/20261113-120000-000", Time: time.Now().UTC()})
-		files[".holdfast/checkpoints/manual.json"] = string(mark)
 	}
 	for name, content := range files {
 		path := filepath.Join(root, name)
@@ -345,10 +341,9 @@ func autoPolicy(t *testing.T, root string) *Policy {
 }
 
 func TestAutonomousMode(t *testing.T) {
-	feature := autoPolicy(t, fakeRepo(t, "ref: refs/heads/feature/login", false))
-	withSnap := autoPolicy(t, fakeRepo(t, "ref: refs/heads/feature/login", true))
-	onMain := autoPolicy(t, fakeRepo(t, "ref: refs/heads/main", false))
-	detached := autoPolicy(t, fakeRepo(t, "3f1c2d0000000000000000000000000000000000", false))
+	feature := autoPolicy(t, fakeRepo(t, "ref: refs/heads/feature/login"))
+	onMain := autoPolicy(t, fakeRepo(t, "ref: refs/heads/main"))
+	detached := autoPolicy(t, fakeRepo(t, "3f1c2d0000000000000000000000000000000000"))
 
 	tests := []struct {
 		name string
@@ -373,14 +368,10 @@ func TestAutonomousMode(t *testing.T) {
 		{"все ветки", feature, "git push --all", Deny, "git-push-all"},
 		{"repo с значением", feature, "git push --repo origin", Allow, ""},
 
-		// Обратимое: разрешено, если есть снапшот; без снапшота — подсказка.
-		{"массовое удаление без снапшота", feature, "rm -r build", Deny, "mass-delete"},
-		{"массовое удаление со снапшотом", withSnap, "rm -r build", Allow, ""},
-		{"find -delete без снапшота", feature, "find build -name '*.o' -delete", Deny, "mass-delete"},
-		{"find -delete со снапшотом", withSnap, "find build -name '*.o' -delete", Allow, ""},
-		{"git clean со снапшотом", withSnap, "git clean -fd", Allow, ""},
-		{"git clean без снапшота", feature, "git clean -fd", Deny, "git-clean"},
-		{"git clean -x", withSnap, "git clean -fdx", Deny, "git-clean"},
+		// Массовое удаление без git: точку сделать нельзя — запрет с подсказкой.
+		{"массовое удаление без git", feature, "rm -r assets", Deny, "mass-delete"},
+		{"find -delete без git", feature, "find assets -name '*.png' -delete", Deny, "mass-delete"},
+		{"git clean -x", feature, "git clean -fdx", Deny, "git-clean"},
 
 		// Вместо «спросить» — запрет с подсказкой.
 		{"npm publish", feature, "npm publish", Deny, "npm-publish"},
@@ -418,15 +409,8 @@ func TestAutonomousMode(t *testing.T) {
 	}
 }
 
-func TestMassDeleteHintMentionsSnapshot(t *testing.T) {
-	p := autoPolicy(t, fakeRepo(t, "ref: refs/heads/dev", false))
-	if v := p.CheckCommand("rm -r build"); !strings.Contains(v.Reason, "holdfast guard start") {
-		t.Fatalf("подсказка должна предлагать снапшот: %q", v.Reason)
-	}
-}
-
 func TestGitFS(t *testing.T) {
-	root := fakeRepo(t, "ref: refs/heads/dev", false)
+	root := fakeRepo(t, "ref: refs/heads/dev")
 	// worktree: .git — файл со ссылкой на настоящую папку.
 	wt := t.TempDir()
 	os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+filepath.Join(root, ".git")+"\n"), 0o644)
@@ -470,9 +454,9 @@ func TestRepoInsideTempDir(t *testing.T) {
 
 // Случаи из живого теста в песочнице.
 func TestLiveSessionFindings(t *testing.T) {
-	project := fakeRepo(t, "ref: refs/heads/feature/x", false)
-	other := fakeRepo(t, "ref: refs/heads/main", false) // другой репозиторий на диске
-	sub := filepath.Join(project, "vendor-lib")         // вложенный репозиторий проекта
+	project := fakeRepo(t, "ref: refs/heads/feature/x")
+	other := fakeRepo(t, "ref: refs/heads/main") // другой репозиторий на диске
+	sub := filepath.Join(project, "vendor-lib")  // вложенный репозиторий проекта
 	os.MkdirAll(filepath.Join(sub, ".git"), 0o755)
 	os.WriteFile(filepath.Join(sub, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644)
 	plain := t.TempDir() // не git
@@ -548,8 +532,8 @@ func TestLiveSessionFindings(t *testing.T) {
 // Удаление отдельных файлов в других git-репозиториях (агент работает
 // не только в проекте) — можно; папки и массовое удаление — нет.
 func TestRmInOtherRepo(t *testing.T) {
-	project := fakeRepo(t, "ref: refs/heads/feature/x", false)
-	other := fakeRepo(t, "ref: refs/heads/main", false)
+	project := fakeRepo(t, "ref: refs/heads/feature/x")
+	other := fakeRepo(t, "ref: refs/heads/main")
 	for i := 0; i < 8; i++ {
 		os.WriteFile(filepath.Join(other, "tmp"+string(rune('a'+i))+".html"), nil, 0o644)
 	}
@@ -593,65 +577,20 @@ func TestRmInOtherRepo(t *testing.T) {
 	}
 }
 
-// Обратимое разрешено только при снимке текущей задачи (замечание из фидбэка:
-// вчерашний снимок не защищает файлы, появившиеся сегодня).
-func TestSnapshotFreshness(t *testing.T) {
-	root := fakeRepo(t, "ref: refs/heads/dev", false)
-	ref := "refs/holdfast/20261114-090000-000"
-	refFile := filepath.Join(root, ".git", filepath.FromSlash(ref))
-	if err := os.MkdirAll(filepath.Dir(refFile), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(refFile, []byte("0\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
-	mark := func(session string, at time.Time) {
-		t.Helper()
-		if err := MarkSnapshot(root, session, Snapshot{Ref: ref}, at); err != nil {
-			t.Fatal(err)
-		}
-	}
-	check := func(session string) Decision {
-		p := autoPolicy(t, root)
-		p.Session, p.Now = session, func() time.Time { return now }
-		return p.CheckCommand("rm -r build").Decision
-	}
-
-	if got := check("s1"); got != Deny {
-		t.Fatalf("без снимков: %s", got)
-	}
-	mark("", now.Add(-24*time.Hour)) // вчерашний ручной снимок
-	if got := check("s1"); got != Deny {
-		t.Fatalf("вчерашний снимок не должен разрешать: %s", got)
-	}
-	mark("", now.Add(-5*time.Minute)) // агент по подсказке сделал guard start
-	if got := check("s1"); got != Allow {
-		t.Fatalf("свежий ручной снимок: %s", got)
-	}
-	mark("", now.Add(-24*time.Hour))
-	mark("s1", now.Add(-3*time.Hour)) // точка перед запросом этой сессии
-	if got := check("s1"); got != Allow {
-		t.Fatalf("точка своей сессии: %s", got)
-	}
-	if got := check("s2"); got != Deny {
-		t.Fatalf("точка чужой сессии не считается: %s", got)
-	}
-	os.Remove(refFile) // снимок удалён
-	if got := check("s1"); got != Deny {
-		t.Fatalf("отметка без снимка: %s", got)
-	}
-}
-
 func TestHoldfastSelfProtection(t *testing.T) {
-	p := autoPolicy(t, fakeRepo(t, "ref: refs/heads/dev", true))
+	p := autoPolicy(t, fakeRepo(t, "ref: refs/heads/dev"))
 	for cmd, want := range map[string]Decision{
 		"holdfast guard rollback --yes":                 Ask,
 		"holdfast guard rollback --to 2":                Ask,
 		"holdfast guard diff --to 2":                    Allow,
 		"holdfast guard list":                           Allow,
 		"git update-ref -d refs/holdfast/20261113-1200": Deny,
+		"git update-ref refs/holdfast/main/x HEAD":      Deny,
 		"git update-ref refs/heads/x HEAD":              Allow,
+		"git update-ref --stdin":                        Deny, // ссылки неизвестны заранее
+		"holdfast -C . guard rollback --yes":            Ask,
+		"holdfast --dir . guard rollback":               Ask,
+		"holdfast -C . guard list":                      Allow,
 	} {
 		if got := p.CheckCommand(cmd); got.Decision != want {
 			t.Errorf("%q = %s (%s), want %s", cmd, got.Decision, got.Rule, want)

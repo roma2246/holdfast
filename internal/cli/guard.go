@@ -89,9 +89,10 @@ func (a *app) guardCheckpointCmd() *cobra.Command {
 		Short: "Точка восстановления перед запросом (вызывается хуком UserPromptSubmit)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Ничего не печатаем и не возвращаем ошибок: вывод этого хука
-			// попал бы в контекст агента, а ошибка помешала бы запросу.
-			guard.RunCheckpoint(a.in, guard.DefaultHookEnv())
+			// При успехе ничего не печатаем (вывод этого хука попал бы в
+			// контекст агента) и никогда не возвращаем ошибку: она помешала
+			// бы запросу. О неудаче хук сам сообщает пользователю.
+			guard.RunCheckpoint(a.in, a.out, guard.DefaultHookEnv())
 			return nil
 		},
 	}
@@ -127,12 +128,8 @@ func (a *app) guardStartCmd() *cobra.Command {
 			if err := guard.EnsureStateDir(g.Dir); err != nil {
 				return err
 			}
-			now := time.Now()
-			snap, err := g.CreateSnapshot(guard.SnapshotRefPrefix, now)
+			snap, err := g.CreateSnapshot(time.Now(), guard.SnapshotMeta{Kind: guard.KindManual})
 			if err != nil {
-				return err
-			}
-			if err := guard.MarkSnapshot(root, "", snap, now); err != nil {
 				return err
 			}
 			fmt.Fprintf(a.out, "Снапшот %s сохранён (%s)\n", snap.Name(), snap.Ref)
@@ -157,13 +154,20 @@ func (a *app) guardListCmd() *cobra.Command {
 		Short: "Показать точки восстановления: когда, перед каким запросом, что изменилось с тех пор",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			g, err := a.openGit()
+			root, err := a.repoRoot()
 			if err != nil {
 				return err
 			}
-			snaps, err := g.Snapshots(guard.SnapshotRefPrefix)
+			g, err := guard.OpenGit(root)
 			if err != nil {
 				return err
+			}
+			snaps, err := g.Snapshots()
+			if err != nil {
+				return err
+			}
+			if msg := guard.LastCheckpointError(root); msg != "" {
+				fmt.Fprintf(a.out, "⚠ Последняя автоматическая точка НЕ создана: %s\n  Изменения последнего запроса этой точкой не защищены.\n\n", msg)
 			}
 			if len(snaps) == 0 {
 				fmt.Fprintln(a.out, "Точек восстановления пока нет.")
@@ -179,13 +183,7 @@ func (a *app) guardListCmd() *cobra.Command {
 			}
 			now := time.Now()
 			for i, s := range snaps {
-				label := "вручную"
-				if s.Meta.Kind == guard.KindCheckpoint {
-					label = "перед запросом"
-					if s.Meta.Prompt != "" {
-						label += " «" + truncate(s.Meta.Prompt, 60) + "»"
-					}
-				}
+				label := snapshotLabel(s)
 				changes := "без изменений с тех пор"
 				if s.Tree != cur {
 					if ch, err := g.ChangesTo(s, cur); err == nil {
@@ -201,6 +199,22 @@ func (a *app) guardListCmd() *cobra.Command {
 	}
 	cmd.Flags().IntVarP(&limit, "limit", "n", 10, "сколько последних точек показать (0 — все)")
 	return cmd
+}
+
+// snapshotLabel — как точка появилась.
+func snapshotLabel(s guard.Snapshot) string {
+	switch s.Meta.Kind {
+	case guard.KindCheckpoint:
+		if s.Meta.Prompt != "" {
+			return "перед запросом «" + truncate(s.Meta.Prompt, 60) + "»"
+		}
+		return "перед запросом"
+	case guard.KindPreDelete:
+		return "перед массовым удалением: " + truncate(s.Meta.Prompt, 50)
+	case guard.KindBackup:
+		return "резервная копия " + truncate(s.Meta.Prompt, 50)
+	}
+	return "вручную"
 }
 
 // humanAgo — «5 мин назад», «3 ч назад», «2 дн назад».
@@ -249,7 +263,7 @@ func (a *app) guardDiffCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&stat, "stat", false, "только статистика по файлам")
 	cmd.Flags().IntVar(&to, "to", 0, "номер точки из holdfast guard list (1 — последняя)")
-	cmd.Flags().StringVar(&name, "snapshot", "", "имя снапшота (по умолчанию последний)")
+	cmd.Flags().StringVar(&name, "snapshot", "", "имя снапшота или резервной копии (по умолчанию последний)")
 	return cmd
 }
 
@@ -276,24 +290,39 @@ func (a *app) guardRollbackCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ch, err := g.ChangesSince(snap)
+			// План строится до любых изменений: всё, что откат перезапишет или
+			// удалит, должно попасть в резервную копию — иначе откат не начнётся.
+			plan, err := g.PlanRollback(snap)
 			if err != nil {
 				return err
 			}
+			ch := plan.Changes
 			if ch.Empty() {
 				fmt.Fprintf(a.out, "Рабочее дерево совпадает со снапшотом %s — откатывать нечего\n", snap.Name())
 				return nil
 			}
-			fmt.Fprintf(a.out, "Откат к снапшоту %s (%s)", snap.Name(), snap.Time.Local().Format("2006-01-02 15:04:05"))
-			if snap.Meta.Prompt != "" {
-				fmt.Fprintf(a.out, ", перед запросом «%s»", truncate(snap.Meta.Prompt, 60))
+			fmt.Fprintf(a.out, "Откат к снапшоту %s (%s), %s:\n", snap.Name(),
+				snap.Time.Local().Format("2006-01-02 15:04:05"), snapshotLabel(snap))
+			hidden := map[string]bool{}
+			for _, h := range plan.Hidden {
+				hidden[h] = true
 			}
-			fmt.Fprintln(a.out, ":")
+			note := func(f string) string {
+				for h := range hidden {
+					if f == h || strings.HasPrefix(f, h+"/") {
+						return "  (сейчас игнорируется git; текущая версия сохранится в резервной копии)"
+					}
+				}
+				return ""
+			}
 			for _, f := range ch.Modified {
-				fmt.Fprintf(a.out, "  восстановить  %s\n", f)
+				fmt.Fprintf(a.out, "  восстановить  %s%s\n", f, note(f))
 			}
 			for _, f := range ch.Added {
-				fmt.Fprintf(a.out, "  удалить       %s\n", f)
+				fmt.Fprintf(a.out, "  удалить       %s%s\n", f, note(f))
+			}
+			for _, f := range plan.Skipped {
+				fmt.Fprintf(a.out, "  не трогать    %s  (вложенный git-репозиторий: его содержимое нельзя сохранить)\n", f)
 			}
 			if !yes && !a.confirm("Откатить эти изменения?") {
 				fmt.Fprintln(a.out, "Отменено")
@@ -304,13 +333,13 @@ func (a *app) guardRollbackCmd() *cobra.Command {
 				return err
 			}
 			fmt.Fprintf(a.out, "Готово: восстановлено %d, удалено %d файлов.\n", len(done.Modified), len(done.Added))
-			fmt.Fprintf(a.out, "Состояние до отката сохранено в %s\n", backup.Ref)
+			fmt.Fprintf(a.out, "Состояние до отката сохранено. Отменить откат: holdfast guard rollback --snapshot %s\n", backup.Name())
 			return nil
 		},
 	}
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "не спрашивать подтверждение")
 	cmd.Flags().IntVar(&to, "to", 0, "номер точки из holdfast guard list (1 — последняя)")
-	cmd.Flags().StringVar(&name, "snapshot", "", "имя снапшота (по умолчанию последний)")
+	cmd.Flags().StringVar(&name, "snapshot", "", "имя снапшота или резервной копии (по умолчанию последний)")
 	return cmd
 }
 

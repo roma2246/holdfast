@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -87,7 +88,7 @@ func TestSnapshotRollback(t *testing.T) {
 			if _, err := g.FindSnapshot(""); !errors.Is(err, ErrNoSnapshot) {
 				t.Fatalf("ожидалась ErrNoSnapshot, получено %v", err)
 			}
-			snap, err := g.CreateSnapshot(SnapshotRefPrefix, time.Now())
+			snap, err := g.CreateSnapshot(time.Now(), SnapshotMeta{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -167,7 +168,7 @@ func TestSnapshotRollback(t *testing.T) {
 			}
 
 			// Резервная копия позволяет отменить откат.
-			backups, err := g.Snapshots(BackupRefPrefix)
+			backups, err := g.Backups()
 			if err != nil || len(backups) != 1 || backups[0].Commit != backup.Commit {
 				t.Fatalf("backups: %+v %v", backups, err)
 			}
@@ -182,12 +183,12 @@ func TestSnapshotUniqueRefs(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	s1, err1 := g.CreateSnapshot(SnapshotRefPrefix, now)
-	s2, err2 := g.CreateSnapshot(SnapshotRefPrefix, now)
+	s1, err1 := g.CreateSnapshot(now, SnapshotMeta{})
+	s2, err2 := g.CreateSnapshot(now, SnapshotMeta{})
 	if err1 != nil || err2 != nil || s1.Ref == s2.Ref {
 		t.Fatalf("refs %s %s: %v %v", s1.Ref, s2.Ref, err1, err2)
 	}
-	snaps, _ := g.Snapshots(SnapshotRefPrefix)
+	snaps, _ := g.Snapshots()
 	if len(snaps) != 2 {
 		t.Fatalf("снапшотов %d", len(snaps))
 	}
@@ -224,7 +225,7 @@ func TestCheckpointDedupAndPrune(t *testing.T) {
 			t.Fatalf("точка %d: %v %v", i, created, err)
 		}
 	}
-	snaps, _ := g.Snapshots(SnapshotRefPrefix)
+	snaps, _ := g.Snapshots()
 	if len(snaps) != 3 {
 		t.Fatalf("должно остаться 3 точки, осталось %d", len(snaps))
 	}
@@ -239,7 +240,7 @@ func TestCheckpointDedupAndPrune(t *testing.T) {
 		t.Fatal("несуществующая точка")
 	}
 	// Ручной снимок старого формата читается как manual.
-	manual, err := g.CreateSnapshot(SnapshotRefPrefix, now.Add(time.Hour))
+	manual, err := g.CreateSnapshot(now.Add(time.Hour), SnapshotMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,18 +260,18 @@ func TestRunCheckpointHook(t *testing.T) {
 	env := testEnv(dir)
 	in := `{"session_id":"sess-42","cwd":"` + dir + `","hook_event_name":"UserPromptSubmit","prompt":"почини тесты"}`
 
-	RunCheckpoint(strings.NewReader(in), env)
+	RunCheckpoint(strings.NewReader(in), io.Discard, env)
 	write(t, dir, "a.txt", "agent edit\n")
-	RunCheckpoint(strings.NewReader(in), env)
-	RunCheckpoint(strings.NewReader(in), env) // без изменений
+	RunCheckpoint(strings.NewReader(in), io.Discard, env)
+	RunCheckpoint(strings.NewReader(in), io.Discard, env) // без изменений
 
 	g, _ := OpenGit(dir)
-	snaps, _ := g.Snapshots(SnapshotRefPrefix)
+	snaps, _ := g.Snapshots()
 	if len(snaps) != 2 || snaps[0].Meta.Prompt != "почини тесты" {
 		t.Fatalf("точки: %+v", snaps)
 	}
-	if !freshSnapshot(dir, "sess-42", env.Now()) || freshSnapshot(dir, "other", env.Now()) {
-		t.Fatal("отметка точки текущей сессии")
+	if snaps[0].Meta.Session != "sess-42" || !samePath(snaps[0].Meta.Worktree, dir) {
+		t.Fatalf("метаданные точки: %+v", snaps[0].Meta)
 	}
 	entries, _ := ReadLog(dir)
 	rules := []string{}
@@ -281,7 +282,7 @@ func TestRunCheckpointHook(t *testing.T) {
 		t.Fatalf("журнал: %v", rules)
 	}
 	// Вне git и с мусором на входе — молча ничего не делает.
-	RunCheckpoint(strings.NewReader("not json"), testEnv(t.TempDir()))
+	RunCheckpoint(strings.NewReader("not json"), io.Discard, testEnv(t.TempDir()))
 }
 
 // Быстрый путь (постоянный индекс) обязан давать то же дерево, что и честный.

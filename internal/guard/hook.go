@@ -117,10 +117,11 @@ func Evaluate(root string, input HookInput) (Verdict, *Policy) {
 	}
 	// Конфиг читаем лениво: только для инструментов, которые проверяем,
 	// и только секцию [guard].
+	var cfgErr error
 	load := func() *Policy {
 		cfg, err := config.LoadGuard(root)
 		if err != nil {
-			cfg = nil // битый конфиг — работаем со встроенной политикой
+			cfg, cfgErr = nil, err // встроенные правила продолжают работать
 		}
 		p := NewPolicy(root, input.Cwd, cfg)
 		p.Session = input.SessionID
@@ -143,6 +144,15 @@ func Evaluate(root string, input HookInput) (Verdict, *Policy) {
 		v = p.CheckFile(OpRead, ti.FilePath)
 	default:
 		return allowVerdict, nil
+	}
+	// Конфиг есть, но не читается: правила пользователя (защищённые пути,
+	// запреты команд) сейчас не действуют. Молча работать на одних встроенных
+	// правилах нельзя — ошибка настройки не должна ослаблять защиту. Поэтому
+	// всё, что меняет состояние, требует подтверждения, пока конфиг не исправят.
+	if cfgErr != nil && input.ToolName != "Read" {
+		v = worst(v, Verdict{Ask, "config-error", fmt.Sprintf(
+			"%s не читается (%v): правила проекта не применяются. Исправьте конфиг; до этого действия агента требуют подтверждения",
+			config.FileName, cfgErr)})
 	}
 	return v, p
 }

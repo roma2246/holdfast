@@ -162,10 +162,7 @@ func stripWrappers(args []word) (rest []word, viaXargs bool) {
 		case "sudo", "doas":
 			args = skipFlags(args[1:], map[string]bool{"-u": true, "-g": true, "-C": true, "-D": true})
 		case "env":
-			args = args[1:]
-			for len(args) > 0 && (strings.HasPrefix(args[0].s, "-") || strings.Contains(args[0].s, "=")) {
-				args = args[1:]
-			}
+			args = stripEnv(args[1:])
 		case "command", "builtin", "exec", "nohup", "time", "stdbuf":
 			args = skipFlags(args[1:], nil)
 		case "nice":
@@ -183,6 +180,40 @@ func stripWrappers(args []word) (rest []word, viaXargs bool) {
 		}
 	}
 	return args, viaXargs
+}
+
+// stripEnv пропускает опции и присваивания команды env и возвращает
+// саму запускаемую команду: env -i -u NAME -C dir VAR=1 cmd args…
+func stripEnv(args []word) []word {
+	for len(args) > 0 {
+		a := args[0].s
+		switch {
+		case a == "--":
+			return args[1:]
+		case a == "-u" || a == "--unset" || a == "-C" || a == "--chdir":
+			if len(args) < 2 {
+				return nil
+			}
+			args = args[2:]
+		case a == "-S" || a == "--split-string":
+			// env -S "cmd arg…": команда записана одной строкой.
+			if len(args) < 2 {
+				return nil
+			}
+			var split []word
+			for _, f := range strings.Fields(args[1].s) {
+				split = append(split, word{s: f, dynamic: args[1].dynamic})
+			}
+			return stripEnv(append(split, args[2:]...))
+		case strings.HasPrefix(a, "-") && a != "-":
+			args = args[1:] // -i, --ignore-environment, --unset=NAME, -uNAME …
+		case strings.Contains(a, "="):
+			args = args[1:] // VAR=value
+		default:
+			return args
+		}
+	}
+	return args
 }
 
 func skipFlags(args []word, withValue map[string]bool) []word {
@@ -236,7 +267,7 @@ func (p *Policy) checkCall(c *syntax.CallExpr, depth int) Verdict {
 		v = worst(v, p.checkRm(args[1:], viaXargs))
 	case name == "git":
 		v = worst(v, p.checkGit(args[1:]))
-	case name == "holdfast" && len(args) > 2 && args[1].s == "guard" && args[2].s == "rollback":
+	case name == "holdfast" && isHoldfastRollback(args[1:]):
 		// Откат перезаписывает файлы проекта, в том числе правки самого
 		// пользователя, — это решает человек, а не агент.
 		v = worst(v, Verdict{Ask, "holdfast-rollback", "откат перезапишет файлы проекта — нужно подтверждение пользователя"})
@@ -246,14 +277,23 @@ func (p *Policy) checkCall(c *syntax.CallExpr, depth int) Verdict {
 				"Подготовь версию и changelog, а публикацию оставь человеку или CI"))
 		}
 	case name == "find":
-		if hasArg(args[1:], "-delete") || execsRm(args[1:]) {
-			v = worst(v, p.reversible("mass-delete", "find с удалением может удалить много файлов"))
-		}
+		v = worst(v, p.checkFind(args[1:]))
 	}
 
 	v = worst(v, p.checkMutatingPaths(name, args[1:]))
 	v = worst(v, p.checkConfigured(args))
 	return v
+}
+
+// isHoldfastRollback распознаёт `holdfast [-C dir] guard rollback …`.
+func isHoldfastRollback(args []word) bool {
+	for len(args) > 0 && strings.HasPrefix(args[0].s, "-") {
+		if (args[0].s == "-C" || args[0].s == "--dir") && len(args) > 1 {
+			args = args[1:]
+		}
+		args = args[1:]
+	}
+	return len(args) >= 2 && args[0].s == "guard" && args[1].s == "rollback"
 }
 
 // metadataCommands не читают содержимое файла: существует ли он, размер,
@@ -532,7 +572,8 @@ func (p *Policy) checkRm(args []word, viaXargs bool) Verdict {
 	}
 
 	v := allowVerdict
-	count, otherCount := 0, 0 // файлы проекта и файлы в других репозиториях
+	var inProject []string // цели внутри проекта
+	otherCount := 0        // файлы в других репозиториях
 	for _, t := range targets {
 		relativeAfterUnknownCd := p.cwdUnknown && !filepath.IsAbs(p.expandHome(t.s))
 		if (t.dynamic && !strings.HasPrefix(t.s, "$HOME")) || relativeAfterUnknownCd {
@@ -573,11 +614,9 @@ func (p *Policy) checkRm(args []word, viaXargs bool) Verdict {
 				"Удаляй только файлы проекта, отдельные файлы в git-репозиториях или временные файлы в /tmp"))
 			continue
 		}
-		count += p.countTargets(abs, recursive, p.cfg.MaxDeletes+1-count)
+		inProject = append(inProject, abs)
 	}
-	if count > p.cfg.MaxDeletes {
-		v = worst(v, p.reversible("mass-delete", fmt.Sprintf("удаление более %d файлов", p.cfg.MaxDeletes)))
-	}
+	v = worst(v, p.deleteInProject("удаление (rm)", inProject, recursive, nil))
 	if otherCount > p.cfg.MaxDeletes {
 		v = worst(v, p.soft("mass-delete", fmt.Sprintf("удаление более %d файлов вне проекта", p.cfg.MaxDeletes),
 			"Снапшот проекта эти файлы не защищает — удаляй по несколько файлов за раз"))
@@ -649,9 +688,14 @@ func (p *Policy) checkGit(args []word) Verdict {
 		return p.checkPush(rest, p.abs(dir), dirUnknown)
 	case "update-ref":
 		for _, w := range rest {
-			if strings.HasPrefix(w.s, "refs/holdfast") && (hasArg(rest, "-d") || hasArg(rest, "--delete") || hasArg(rest, "--stdin")) {
-				return Verdict{Deny, "holdfast-snapshots", "точки восстановления — страховка пользователя, удалять их агенту нельзя"}
+			if strings.HasPrefix(w.s, "refs/holdfast") {
+				return Verdict{Deny, "holdfast-snapshots", "точки восстановления — страховка пользователя, менять и удалять их агенту нельзя"}
 			}
+		}
+		if hasArg(rest, "--stdin") {
+			// Имена ссылок придут из stdin — что изменится, неизвестно.
+			return p.soft("git-update-ref", "git update-ref --stdin: изменяемые ссылки неизвестны заранее",
+				"Используй явную форму: git update-ref <ссылка> <значение>")
 		}
 	case "reset":
 		if hasArg(rest, "--hard") {
@@ -670,10 +714,10 @@ func (p *Policy) checkGit(args []word) Verdict {
 		}
 		switch {
 		case force && ignored:
-			return p.soft("git-clean", "git clean -x удаляет и игнорируемые файлы (.env, локальные настройки) — их нет в снапшоте",
+			return p.soft("git-clean", "git clean -x удаляет и игнорируемые файлы (.env, локальные настройки) — их нет в точках восстановления",
 				"Удаляй конкретные файлы или используй git clean -f без -x")
 		case force:
-			return p.reversible("git-clean", "git clean удаляет неотслеживаемые файлы")
+			return p.checkGitClean(p.abs(dir), dirUnknown)
 		}
 	}
 	return allowVerdict

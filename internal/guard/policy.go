@@ -114,19 +114,6 @@ func (p *Policy) soft(rule, reason, hint string) Verdict {
 	return Verdict{Deny, rule, reason + ". " + hint}
 }
 
-// reversible — действие, которое можно откатить снапшотом (массовое
-// удаление файлов проекта). В autonomous разрешено, если есть снимок
-// текущей задачи: старый снимок не защитит файлы, появившиеся после него.
-func (p *Policy) reversible(rule, reason string) Verdict {
-	if p.cfg.Strict() {
-		return Verdict{Ask, rule, reason + " — нужно подтверждение пользователя"}
-	}
-	if freshSnapshot(p.Root, p.Session, p.Now()) {
-		return allowVerdict // откат: holdfast guard rollback
-	}
-	return Verdict{Deny, rule, reason + ", а снимка текущей задачи нет. Выполни `holdfast guard start` (сохранит состояние для отката) и повтори команду"}
-}
-
 // Touched — файлы (абсолютные пути), которые затронуло проверенное действие.
 func (p *Policy) Touched() []string { return p.touched }
 
@@ -209,7 +196,9 @@ func (p *Policy) isTempPath(abs string) bool {
 	for _, dir := range p.tempDirs {
 		dir = filepath.Clean(dir)
 		if abs != dir && isWithin(dir, abs) {
-			return true
+			// Чужой git-репозиторий во временной папке (клон, checkout на CI) —
+			// это чья-то работа, а не черновики: послабление на него не действует.
+			return findGitRoot(abs) == ""
 		}
 	}
 	return false

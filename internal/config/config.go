@@ -56,6 +56,16 @@ const (
 // DefaultProtectedBranches — ветки, push в которые агенту запрещён.
 var DefaultProtectedBranches = []string{"main", "master"}
 
+// DefaultDisposablePaths — пересоздаваемые папки и файлы: их можно удалять
+// массово, даже если git их игнорирует и в точку восстановления они не попадут.
+// Шаблон без '/' сравнивается с именем любой папки или файла на пути.
+var DefaultDisposablePaths = []string{
+	"node_modules", "dist", "build", "out", "target", "coverage", "tmp",
+	".next", ".nuxt", ".turbo", ".cache", ".parcel-cache",
+	"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".venv", "venv",
+	"*.pyc", "*.o", "*.class", "*.log", ".DS_Store",
+}
+
 // GuardConfig — секция [guard].
 type GuardConfig struct {
 	Mode              string        `toml:"mode"`
@@ -65,6 +75,7 @@ type GuardConfig struct {
 	AskCommands       []string      `toml:"ask_commands"`
 	MaxDeletes        int           `toml:"max_deletes"`
 	KeepSnapshots     int           `toml:"keep_snapshots"`
+	DisposablePaths   []string      `toml:"disposable_paths"`
 	Context           []ContextNote `toml:"context"`
 	Synced            SyncedConfig  `toml:"synced"`
 }
@@ -90,6 +101,9 @@ func (g *GuardConfig) Normalize() error {
 	}
 	if g.ProtectedBranches == nil {
 		g.ProtectedBranches = append([]string(nil), DefaultProtectedBranches...)
+	}
+	if g.DisposablePaths == nil {
+		g.DisposablePaths = append([]string(nil), DefaultDisposablePaths...)
 	}
 	switch g.Mode {
 	case "":
@@ -133,6 +147,7 @@ func Default() *Config {
 			Mode:              ModeAutonomous,
 			MaxDeletes:        DefaultMaxDeletes,
 			KeepSnapshots:     DefaultKeepSnapshots,
+			DisposablePaths:   append([]string(nil), DefaultDisposablePaths...),
 			ProtectedBranches: append([]string(nil), DefaultProtectedBranches...),
 		},
 	}
@@ -220,8 +235,13 @@ protected_paths = []
 deny_commands = []
 # Команды, перед которыми агент должен спросить вас (в любом режиме).
 ask_commands = []
-# Сколько файлов можно удалить одной командой без снимка текущей задачи.
+# Сколько файлов можно удалить одной командой без точки восстановления.
+# Больше — хук сначала сам делает точку и проверяет, что удаляемое в неё попало.
 max_deletes = 5
+# Пересоздаваемые папки и файлы: их можно удалять массово, даже если git их
+# игнорирует (в точки восстановления они не попадают). По умолчанию —
+# node_modules, dist, build, target, __pycache__, .venv, *.pyc, *.log и т.п.
+# disposable_paths = ["node_modules", "dist", "build"]
 # Сколько последних точек восстановления хранить (holdfast guard list).
 keep_snapshots = 50
 

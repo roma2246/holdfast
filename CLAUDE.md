@@ -21,7 +21,7 @@ CLI-утилита на Go: `holdfast lint` проверяет файлы инс
 - `internal/cli/` — команды cobra; коды выхода: 0 ок, 1 находки lint, 2 сбой.
 - `internal/config/` — `holdfast.toml`; секцию `[guard.synced]` пишет только `sync`.
 - `internal/lint/` — парсер, реестр правил, отчёт; `internal/lint/rules/` — одно правило = один файл.
-- `internal/guard/` — политика (`policy.go`, `shell.go`), хуки (`hook.go`, `checkpoint.go`), журнал, снапшоты и точки восстановления, установка хуков.
+- `internal/guard/` — политика (`policy.go`, `shell.go`, `massdelete.go`), хуки (`hook.go`, `checkpoint.go`), журнал, снимки и откат (`snapshot.go`), установка хуков.
 - `internal/bridge/` — извлечение запретов из CLAUDE.md.
 - `testdata/lint/HFxxx/{bad,good}/` — фикстуры правил, `testdata/lint/all/` — все правила сразу.
 
@@ -35,6 +35,8 @@ CLI-утилита на Go: `holdfast lint` проверяет файлы инс
 - Хук не должен падать и должен отвечать быстрее 10 мс: проверяйте `TestHookLatency`.
 - Комментарии к неочевидным конструкциям Go пишем по-русски.
 - Покрытие не ниже 80%.
+- Гарантии (откат без потерь, изоляция worktree, обратимость удаления) проверяются тестами-свойствами в `guarantees_test.go`; новая гарантия — новое свойство там.
+- Обещания в README не сильнее того, что проверено тестами: чего хук не ловит, записано в разделе «Ограничения».
 
 <!-- holdfast
 deny-paths: go.sum
