@@ -3,6 +3,7 @@ package guard
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -195,5 +196,135 @@ func TestSnapshotUniqueRefs(t *testing.T) {
 func TestOpenGitNotRepo(t *testing.T) {
 	if _, err := OpenGit(t.TempDir()); err == nil {
 		t.Fatal("ожидалась ошибка вне git-репозитория")
+	}
+}
+
+func TestCheckpointDedupAndPrune(t *testing.T) {
+	dir := gitRepo(t, true)
+	g, err := OpenGit(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)
+	meta := SnapshotMeta{Kind: KindCheckpoint, Session: "s1", Prompt: "добавь\nлогирование   в app.py"}
+
+	s1, created, err := g.Checkpoint(now, meta, 3)
+	if err != nil || !created {
+		t.Fatalf("первая точка: %v %v", created, err)
+	}
+	// Ничего не изменилось — новая точка не нужна.
+	s2, created, err := g.Checkpoint(now.Add(time.Minute), meta, 3)
+	if err != nil || created || s2.Ref != s1.Ref {
+		t.Fatalf("без изменений не должно быть новой точки: %v %+v", created, s2)
+	}
+	// Изменения → новые точки; старше трёх — удаляются.
+	for i := 0; i < 4; i++ {
+		write(t, dir, "a.txt", fmt.Sprintf("v%d\n", i))
+		if _, created, err := g.Checkpoint(now.Add(time.Duration(i+2)*time.Minute), meta, 3); err != nil || !created {
+			t.Fatalf("точка %d: %v %v", i, created, err)
+		}
+	}
+	snaps, _ := g.Snapshots(SnapshotRefPrefix)
+	if len(snaps) != 3 {
+		t.Fatalf("должно остаться 3 точки, осталось %d", len(snaps))
+	}
+	m := snaps[0].Meta
+	if m.Kind != KindCheckpoint || m.Session != "s1" || m.Prompt != "добавь логирование в app.py" || snaps[0].Tree == "" {
+		t.Fatalf("метаданные: %+v tree=%q", m, snaps[0].Tree)
+	}
+	if at, err := g.SnapshotAt(2); err != nil || at.Ref != snaps[1].Ref {
+		t.Fatalf("SnapshotAt(2): %+v %v", at, err)
+	}
+	if _, err := g.SnapshotAt(9); err == nil {
+		t.Fatal("несуществующая точка")
+	}
+	// Ручной снимок старого формата читается как manual.
+	manual, err := g.CreateSnapshot(SnapshotRefPrefix, now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := g.FindSnapshot(manual.Name()); got.Meta.Kind != KindManual {
+		t.Fatalf("manual: %+v", got.Meta)
+	}
+	if parseMeta("holdfast snapshot 2026").Kind != KindManual {
+		t.Fatal("старый формат")
+	}
+	if g.Prune(0) != nil {
+		t.Fatal("Prune(0) ничего не делает")
+	}
+}
+
+func TestRunCheckpointHook(t *testing.T) {
+	dir := gitRepo(t, true)
+	env := testEnv(dir)
+	in := `{"session_id":"sess-42","cwd":"` + dir + `","hook_event_name":"UserPromptSubmit","prompt":"почини тесты"}`
+
+	RunCheckpoint(strings.NewReader(in), env)
+	write(t, dir, "a.txt", "agent edit\n")
+	RunCheckpoint(strings.NewReader(in), env)
+	RunCheckpoint(strings.NewReader(in), env) // без изменений
+
+	g, _ := OpenGit(dir)
+	snaps, _ := g.Snapshots(SnapshotRefPrefix)
+	if len(snaps) != 2 || snaps[0].Meta.Prompt != "почини тесты" {
+		t.Fatalf("точки: %+v", snaps)
+	}
+	if !freshSnapshot(dir, "sess-42", env.Now()) || freshSnapshot(dir, "other", env.Now()) {
+		t.Fatal("отметка точки текущей сессии")
+	}
+	entries, _ := ReadLog(dir)
+	rules := []string{}
+	for _, e := range entries {
+		rules = append(rules, e.Rule)
+	}
+	if strings.Join(rules, ",") != "checkpoint,checkpoint,unchanged" {
+		t.Fatalf("журнал: %v", rules)
+	}
+	// Вне git и с мусором на входе — молча ничего не делает.
+	RunCheckpoint(strings.NewReader("not json"), testEnv(t.TempDir()))
+}
+
+// Быстрый путь (постоянный индекс) обязан давать то же дерево, что и честный.
+func TestWriteTreeCachedMatchesFresh(t *testing.T) {
+	dir := gitRepo(t, true)
+	g, err := OpenGit(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	same := func(step string) {
+		t.Helper()
+		cached, err1 := g.writeTreeCached()
+		fresh, err2 := g.writeTreeFresh()
+		if err1 != nil || err2 != nil || cached != fresh {
+			t.Fatalf("%s: cached=%s (%v) fresh=%s (%v)", step, cached, err1, fresh, err2)
+		}
+	}
+	same("чистое дерево")
+	write(t, dir, "a.txt", "изменён\n")
+	write(t, dir, "new/untracked.txt", "новый\n")
+	write(t, dir, "debug.log", "игнорируется\n")
+	same("правка, новый файл, игнорируемый файл")
+	os.Remove(filepath.Join(dir, "b.txt"))
+	same("удаление отслеживаемого файла")
+	// Файл был в прошлых снимках, а потом попал в .gitignore.
+	write(t, dir, ".gitignore", "*.log\nnew/\n")
+	same("новый файл стал игнорируемым")
+	// Новый коммит и принудительно добавленный игнорируемый файл.
+	git(t, dir, "add", "-A")
+	git(t, dir, "add", "-f", "debug.log")
+	git(t, dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "second")
+	write(t, dir, "debug.log", "изменён после коммита\n")
+	same("после коммита, отслеживаемый игнорируемый файл")
+	os.Remove(filepath.Join(dir, "new", "untracked.txt"))
+	same("удаление игнорируемого неотслеживаемого файла")
+
+	// Без коммитов быстрый путь не используется.
+	empty := gitRepo(t, false)
+	ge, _ := OpenGit(empty)
+	if _, err := ge.writeTreeCached(); err == nil {
+		t.Fatal("без коммитов ожидалась ошибка быстрого пути")
+	}
+	if _, err := ge.WriteTree(); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -1,10 +1,12 @@
 package guard
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/roma2246/holdfast/internal/config"
 )
@@ -322,6 +324,8 @@ func fakeRepo(t *testing.T, head string, snapshot bool) string {
 	}
 	if snapshot {
 		files[".git/refs/holdfast/20261113-120000-000"] = "0000000000000000000000000000000000000000\n"
+		mark, _ := json.Marshal(snapshotMark{Ref: "refs/holdfast/20261113-120000-000", Time: time.Now().UTC()})
+		files[".holdfast/checkpoints/manual.json"] = string(mark)
 	}
 	for name, content := range files {
 		path := filepath.Join(root, name)
@@ -431,10 +435,10 @@ func TestGitFS(t *testing.T) {
 	}
 	// packed-refs
 	os.WriteFile(filepath.Join(root, ".git", "packed-refs"), []byte("# pack-refs\nabc refs/tags/v2.0\nabc refs/holdfast/x\n"), 0o644)
-	if !refExists(root, "refs/tags/v2.0") || refExists(root, "refs/tags/v9") || !hasSnapshot(root) {
+	if !refExists(root, "refs/tags/v2.0") || refExists(root, "refs/tags/v9") || !refExists(root, "refs/holdfast/x") {
 		t.Error("packed-refs не прочитан")
 	}
-	if currentBranch(t.TempDir()) != "" || hasSnapshot(t.TempDir()) || refExists(t.TempDir(), "x") {
+	if currentBranch(t.TempDir()) != "" || refExists(t.TempDir(), "x") {
 		t.Error("вне git должно быть пусто")
 	}
 }
@@ -586,5 +590,71 @@ func TestRmInOtherRepo(t *testing.T) {
 				t.Fatalf("%q = %s [%s: %s], want %s [%s]", tt.cmd, got.Decision, got.Rule, got.Reason, tt.want, tt.rule)
 			}
 		})
+	}
+}
+
+// Обратимое разрешено только при снимке текущей задачи (замечание из фидбэка:
+// вчерашний снимок не защищает файлы, появившиеся сегодня).
+func TestSnapshotFreshness(t *testing.T) {
+	root := fakeRepo(t, "ref: refs/heads/dev", false)
+	ref := "refs/holdfast/20261114-090000-000"
+	refFile := filepath.Join(root, ".git", filepath.FromSlash(ref))
+	if err := os.MkdirAll(filepath.Dir(refFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(refFile, []byte("0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	mark := func(session string, at time.Time) {
+		t.Helper()
+		if err := MarkSnapshot(root, session, Snapshot{Ref: ref}, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check := func(session string) Decision {
+		p := autoPolicy(t, root)
+		p.Session, p.Now = session, func() time.Time { return now }
+		return p.CheckCommand("rm -r build").Decision
+	}
+
+	if got := check("s1"); got != Deny {
+		t.Fatalf("без снимков: %s", got)
+	}
+	mark("", now.Add(-24*time.Hour)) // вчерашний ручной снимок
+	if got := check("s1"); got != Deny {
+		t.Fatalf("вчерашний снимок не должен разрешать: %s", got)
+	}
+	mark("", now.Add(-5*time.Minute)) // агент по подсказке сделал guard start
+	if got := check("s1"); got != Allow {
+		t.Fatalf("свежий ручной снимок: %s", got)
+	}
+	mark("", now.Add(-24*time.Hour))
+	mark("s1", now.Add(-3*time.Hour)) // точка перед запросом этой сессии
+	if got := check("s1"); got != Allow {
+		t.Fatalf("точка своей сессии: %s", got)
+	}
+	if got := check("s2"); got != Deny {
+		t.Fatalf("точка чужой сессии не считается: %s", got)
+	}
+	os.Remove(refFile) // снимок удалён
+	if got := check("s1"); got != Deny {
+		t.Fatalf("отметка без снимка: %s", got)
+	}
+}
+
+func TestHoldfastSelfProtection(t *testing.T) {
+	p := autoPolicy(t, fakeRepo(t, "ref: refs/heads/dev", true))
+	for cmd, want := range map[string]Decision{
+		"holdfast guard rollback --yes":                 Ask,
+		"holdfast guard rollback --to 2":                Ask,
+		"holdfast guard diff --to 2":                    Allow,
+		"holdfast guard list":                           Allow,
+		"git update-ref -d refs/holdfast/20261113-1200": Deny,
+		"git update-ref refs/heads/x HEAD":              Allow,
+	} {
+		if got := p.CheckCommand(cmd); got.Decision != want {
+			t.Errorf("%q = %s (%s), want %s", cmd, got.Decision, got.Rule, want)
+		}
 	}
 }

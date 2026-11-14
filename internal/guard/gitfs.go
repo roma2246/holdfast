@@ -89,20 +89,6 @@ func refExists(root, ref string) bool {
 	return packedRefsHas(cd, func(name string) bool { return name == ref })
 }
 
-// hasSnapshot — есть ли хотя бы один снапшот holdfast (refs/holdfast/*).
-func hasSnapshot(root string) bool {
-	gd := gitDir(root)
-	if gd == "" {
-		return false
-	}
-	cd := commonDir(gd)
-	entries, err := os.ReadDir(filepath.Join(cd, "refs", "holdfast"))
-	if err == nil && len(entries) > 0 {
-		return true
-	}
-	return packedRefsHas(cd, func(name string) bool { return strings.HasPrefix(name, SnapshotRefPrefix) })
-}
-
 func packedRefsHas(commonDir string, match func(string) bool) bool {
 	f, err := os.Open(filepath.Join(commonDir, "packed-refs"))
 	if err != nil {

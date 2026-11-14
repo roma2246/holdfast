@@ -13,13 +13,20 @@ import (
 // HookMatcher — инструменты, перед которыми вызывается хук.
 const HookMatcher = "Bash|Edit|Write|MultiEdit|NotebookEdit|Read"
 
-// DefaultHookCommand — команда, которую Claude Code запускает как хук.
-const DefaultHookCommand = "holdfast guard check"
+// DefaultBin — как Claude Code вызывает holdfast (бинарник из PATH).
+const DefaultBin = "holdfast"
 
-// InstallHook прописывает PreToolUse-хук в .claude/settings.json
-// (или settings.local.json), не затирая другие настройки.
-// Возвращает путь к файлу и changed=false, если хук уже был установлен.
-func InstallHook(root string, local bool, command string) (path string, changed bool, err error) {
+// InstallHook прописывает в .claude/settings.json (или settings.local.json)
+// два хука, не затирая другие настройки:
+//   - PreToolUse: `<bin> guard check` — проверка каждого действия агента;
+//   - UserPromptSubmit: `<bin> guard checkpoint` — точка восстановления
+//     перед каждым запросом пользователя.
+//
+// Повторная установка ничего не дублирует; changed=false — всё уже было.
+func InstallHook(root string, local bool, bin string) (path string, changed bool, err error) {
+	if bin == "" {
+		bin = DefaultBin
+	}
 	name := "settings.json"
 	if local {
 		name = "settings.local.json"
@@ -45,19 +52,30 @@ func InstallHook(root string, local bool, command string) (path string, changed 
 	if hooks == nil {
 		hooks = map[string]any{}
 	}
-	pre, _ := hooks["PreToolUse"].([]any)
-	if hasHookCommand(pre, command) {
+	for _, h := range []struct {
+		event, matcher, command string
+		timeout                 int
+	}{
+		{"PreToolUse", HookMatcher, bin + " guard check", 10},
+		// Снимок большого репозитория может занять секунды — запас по времени.
+		{"UserPromptSubmit", "", bin + " guard checkpoint", 30},
+	} {
+		list, _ := hooks[h.event].([]any)
+		if hasHookCommand(list, h.command) {
+			continue
+		}
+		group := map[string]any{"hooks": []any{map[string]any{
+			"type": "command", "command": h.command, "timeout": h.timeout,
+		}}}
+		if h.matcher != "" {
+			group["matcher"] = h.matcher
+		}
+		hooks[h.event] = append(list, group)
+		changed = true
+	}
+	if !changed {
 		return path, false, nil
 	}
-	pre = append(pre, map[string]any{
-		"matcher": HookMatcher,
-		"hooks": []any{map[string]any{
-			"type":    "command",
-			"command": command,
-			"timeout": 10,
-		}},
-	})
-	hooks["PreToolUse"] = pre
 	settings["hooks"] = hooks
 
 	out, err := json.MarshalIndent(settings, "", "  ")

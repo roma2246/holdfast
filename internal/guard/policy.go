@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/roma2246/holdfast/internal/config"
 )
@@ -66,6 +67,11 @@ type Policy struct {
 	// tempDirs — временные папки, где удалять можно без вопросов.
 	tempDirs []string
 
+	// Session — session_id Claude Code: по нему ищется снимок текущей задачи.
+	Session string
+	// Now — текущее время (в тестах подменяется).
+	Now func() time.Time
+
 	globMu    sync.Mutex
 	globCache map[string]*regexp.Regexp
 }
@@ -86,6 +92,7 @@ func NewPolicy(root, cwd string, cfg *config.GuardConfig) *Policy {
 		Root: filepath.Clean(root), Cwd: filepath.Clean(cwd), Home: filepath.Clean(home),
 		cfg: cfg, globCache: map[string]*regexp.Regexp{},
 		tempDirs: []string{os.TempDir(), "/tmp", "/private/tmp", "/var/folders", "/private/var/folders"},
+		Now:      time.Now,
 	}
 }
 
@@ -108,15 +115,16 @@ func (p *Policy) soft(rule, reason, hint string) Verdict {
 }
 
 // reversible — действие, которое можно откатить снапшотом (массовое
-// удаление файлов проекта). В autonomous разрешено, если снапшот есть.
+// удаление файлов проекта). В autonomous разрешено, если есть снимок
+// текущей задачи: старый снимок не защитит файлы, появившиеся после него.
 func (p *Policy) reversible(rule, reason string) Verdict {
 	if p.cfg.Strict() {
 		return Verdict{Ask, rule, reason + " — нужно подтверждение пользователя"}
 	}
-	if hasSnapshot(p.Root) {
+	if freshSnapshot(p.Root, p.Session, p.Now()) {
 		return allowVerdict // откат: holdfast guard rollback
 	}
-	return Verdict{Deny, rule, reason + ", а снапшота нет. Выполни `holdfast guard start` (сохранит состояние для отката) и повтори команду"}
+	return Verdict{Deny, rule, reason + ", а снимка текущей задачи нет. Выполни `holdfast guard start` (сохранит состояние для отката) и повтори команду"}
 }
 
 // Touched — файлы (абсолютные пути), которые затронуло проверенное действие.

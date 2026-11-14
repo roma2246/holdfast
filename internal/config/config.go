@@ -17,8 +17,9 @@ const FileName = "holdfast.toml"
 
 // Значения по умолчанию.
 const (
-	DefaultMaxTokens  = 2000
-	DefaultMaxDeletes = 5
+	DefaultMaxTokens     = 2000
+	DefaultMaxDeletes    = 5
+	DefaultKeepSnapshots = 50
 )
 
 // DefaultLintFiles — какие файлы инструкций ищет lint, если в конфиге пусто.
@@ -63,6 +64,7 @@ type GuardConfig struct {
 	DenyCommands      []string      `toml:"deny_commands"`
 	AskCommands       []string      `toml:"ask_commands"`
 	MaxDeletes        int           `toml:"max_deletes"`
+	KeepSnapshots     int           `toml:"keep_snapshots"`
 	Context           []ContextNote `toml:"context"`
 	Synced            SyncedConfig  `toml:"synced"`
 }
@@ -82,6 +84,9 @@ func (g *GuardConfig) Strict() bool { return g.Mode == ModeStrict }
 func (g *GuardConfig) Normalize() error {
 	if g.MaxDeletes <= 0 {
 		g.MaxDeletes = DefaultMaxDeletes
+	}
+	if g.KeepSnapshots <= 0 {
+		g.KeepSnapshots = DefaultKeepSnapshots
 	}
 	if g.ProtectedBranches == nil {
 		g.ProtectedBranches = append([]string(nil), DefaultProtectedBranches...)
@@ -127,6 +132,7 @@ func Default() *Config {
 		Guard: GuardConfig{
 			Mode:              ModeAutonomous,
 			MaxDeletes:        DefaultMaxDeletes,
+			KeepSnapshots:     DefaultKeepSnapshots,
 			ProtectedBranches: append([]string(nil), DefaultProtectedBranches...),
 		},
 	}
@@ -214,8 +220,10 @@ protected_paths = []
 deny_commands = []
 # Команды, перед которыми агент должен спросить вас (в любом режиме).
 ask_commands = []
-# Сколько файлов можно удалить одной командой без снапшота.
+# Сколько файлов можно удалить одной командой без снимка текущей задачи.
 max_deletes = 5
+# Сколько последних точек восстановления хранить (holdfast guard list).
+keep_snapshots = 50
 
 # Подсказки агенту в момент, когда он трогает эти файлы.
 # Так правила не раздувают CLAUDE.md и приходят вовремя.

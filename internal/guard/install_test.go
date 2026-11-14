@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -18,7 +19,7 @@ func TestInstallHookPreservesSettings(t *testing.T) {
 }`
 	write(t, root, ".claude/settings.json", existing)
 
-	path, changed, err := InstallHook(root, false, DefaultHookCommand)
+	path, changed, err := InstallHook(root, false, DefaultBin)
 	if err != nil || !changed {
 		t.Fatalf("changed=%v err=%v", changed, err)
 	}
@@ -42,25 +43,30 @@ func TestInstallHookPreservesSettings(t *testing.T) {
 	if last["matcher"] != HookMatcher {
 		t.Errorf("matcher = %v", last["matcher"])
 	}
+	ups := hooks["UserPromptSubmit"].([]any)
+	cmd := ups[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)["command"]
+	if len(ups) != 1 || cmd != "holdfast guard checkpoint" {
+		t.Errorf("UserPromptSubmit: %v", ups)
+	}
 
 	// Повторная установка ничего не меняет.
-	if _, changed, err := InstallHook(root, false, DefaultHookCommand); err != nil || changed {
+	if _, changed, err := InstallHook(root, false, DefaultBin); err != nil || changed {
 		t.Fatalf("повторная установка: changed=%v err=%v", changed, err)
 	}
 }
 
 func TestInstallHookNewAndLocal(t *testing.T) {
 	root := t.TempDir()
-	path, changed, err := InstallHook(root, true, "/usr/local/bin/holdfast guard check")
+	path, changed, err := InstallHook(root, true, "/usr/local/bin/holdfast")
 	if err != nil || !changed || filepath.Base(path) != "settings.local.json" {
 		t.Fatalf("%s %v %v", path, changed, err)
 	}
 	write(t, root, ".claude/settings.json", "{broken")
-	if _, _, err := InstallHook(root, false, DefaultHookCommand); err == nil {
+	if _, _, err := InstallHook(root, false, DefaultBin); err == nil {
 		t.Fatal("ожидалась ошибка для битого JSON")
 	}
 	write(t, root, ".claude/settings.json", "  ")
-	if _, changed, err := InstallHook(root, false, DefaultHookCommand); err != nil || !changed {
+	if _, changed, err := InstallHook(root, false, DefaultBin); err != nil || !changed {
 		t.Fatalf("пустой файл: %v %v", changed, err)
 	}
 }
@@ -74,5 +80,19 @@ func TestReadLogMissingAndCorrupt(t *testing.T) {
 	e, err := ReadLog(root)
 	if err != nil || len(e) != 1 || e[0].Decision != "deny" {
 		t.Fatalf("%+v %v", e, err)
+	}
+}
+
+func TestInstallHookAddsMissingEvent(t *testing.T) {
+	// Старая установка (только PreToolUse) дополняется хуком точек восстановления.
+	root := t.TempDir()
+	write(t, root, ".claude/settings.json", `{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"holdfast guard check"}]}]}}`)
+	_, changed, err := InstallHook(root, false, "")
+	if err != nil || !changed {
+		t.Fatalf("%v %v", changed, err)
+	}
+	data, _ := os.ReadFile(filepath.Join(root, ".claude/settings.json"))
+	if strings.Count(string(data), "guard check\"") != 1 || !strings.Contains(string(data), "guard checkpoint") {
+		t.Fatalf("%s", data)
 	}
 }

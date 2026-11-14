@@ -27,7 +27,69 @@ var ErrNoSnapshot = errors.New("снапшот не найден: сначала
 type Snapshot struct {
 	Ref    string // refs/holdfast/20261113-204901-123
 	Commit string
+	Tree   string // хэш дерева: одинаковый у снимков одинакового состояния
 	Time   time.Time
+	Meta   SnapshotMeta
+}
+
+// Виды снимков.
+const (
+	KindManual     = "manual"     // holdfast guard start
+	KindCheckpoint = "checkpoint" // автоматически перед запросом к агенту
+)
+
+// SnapshotMeta хранится в сообщении служебного коммита снимка.
+type SnapshotMeta struct {
+	Kind    string
+	Session string // session_id Claude Code
+	Prompt  string // начало запроса пользователя
+}
+
+func (m SnapshotMeta) message(now time.Time) string {
+	kind := m.Kind
+	if kind == "" {
+		kind = KindManual
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "holdfast %s %s\n\nkind: %s\n", kind, now.Format(time.RFC3339), kind)
+	if m.Session != "" {
+		fmt.Fprintf(&b, "session: %s\n", m.Session)
+	}
+	if m.Prompt != "" {
+		fmt.Fprintf(&b, "prompt: %s\n", oneLine(m.Prompt, 120))
+	}
+	return b.String()
+}
+
+func parseMeta(body string) SnapshotMeta {
+	var m SnapshotMeta
+	for _, line := range strings.Split(body, "\n") {
+		k, v, ok := strings.Cut(line, ": ")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "kind":
+			m.Kind = v
+		case "session":
+			m.Session = v
+		case "prompt":
+			m.Prompt = v
+		}
+	}
+	if m.Kind == "" {
+		m.Kind = KindManual // снимки старых версий
+	}
+	return m
+}
+
+// oneLine сжимает текст в одну строку не длиннее n символов.
+func oneLine(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > n {
+		return string(r[:n-1]) + "…"
+	}
+	return s
 }
 
 // Name — короткое имя (без префикса).
@@ -98,6 +160,17 @@ func (g *Git) head() (string, bool) {
 // Временный индекс + `git add -A` + `git write-tree` делает то же, что
 // stash, но с новыми файлами и без изменения stash, веток и индекса.
 func (g *Git) WriteTree() (string, error) {
+	// Быстрый путь: постоянный служебный индекс. Если он недоступен (нет
+	// коммитов, параллельный запуск держит блокировку) — честный медленный.
+	if tree, err := g.writeTreeCached(); err == nil {
+		return tree, nil
+	}
+	return g.writeTreeFresh()
+}
+
+// writeTreeFresh строит дерево с нуля во временном индексе: git заново
+// читает и хэширует каждый файл проекта.
+func (g *Git) writeTreeFresh() (string, error) {
 	var tree string
 	err := g.withTempIndex(func(env []string) error {
 		if _, ok := g.head(); ok {
@@ -115,13 +188,46 @@ func (g *Git) WriteTree() (string, error) {
 	return tree, err
 }
 
+// writeTreeCached даёт тот же результат, но хранит служебный индекс в
+// .git/holdfast/index между запусками. В индексе git запоминает размер и
+// время изменения каждого файла, поэтому перечитывает только изменившиеся —
+// на больших проектах это в разы быстрее. `read-tree -m HEAD` возвращает
+// индекс к состоянию HEAD, сохраняя эти отметки у нетронутых файлов.
+func (g *Git) writeTreeCached() (string, error) {
+	gd := gitDir(g.Dir)
+	if _, ok := g.head(); gd == "" || !ok {
+		return "", errors.New("нет .git или коммитов")
+	}
+	dir := filepath.Join(gd, "holdfast")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	env := []string{"GIT_INDEX_FILE=" + filepath.Join(dir, "index")}
+	for _, args := range [][]string{{"read-tree", "-m", "HEAD"}, {"add", "-A", "--", "."}} {
+		if _, err := g.run(env, nil, args...); err != nil {
+			return "", err
+		}
+	}
+	out, err := g.run(env, nil, "write-tree")
+	return strings.TrimSpace(out), err
+}
+
 // CreateSnapshot делает снапшот и сохраняет его в prefix<время>.
 func (g *Git) CreateSnapshot(prefix string, now time.Time) (Snapshot, error) {
+	return g.CreateSnapshotWith(prefix, now, SnapshotMeta{Kind: KindManual})
+}
+
+// CreateSnapshotWith — снапшот с метаданными (вид, сессия, запрос).
+func (g *Git) CreateSnapshotWith(prefix string, now time.Time, meta SnapshotMeta) (Snapshot, error) {
 	tree, err := g.WriteTree()
 	if err != nil {
 		return Snapshot{}, err
 	}
-	args := []string{"commit-tree", tree, "-m", "holdfast snapshot " + now.Format(time.RFC3339)}
+	return g.snapshotFromTree(prefix, now, tree, meta)
+}
+
+func (g *Git) snapshotFromTree(prefix string, now time.Time, tree string, meta SnapshotMeta) (Snapshot, error) {
+	args := []string{"commit-tree", tree, "-m", meta.message(now)}
 	if head, ok := g.head(); ok {
 		args = append(args, "-p", head)
 	}
@@ -139,7 +245,47 @@ func (g *Git) CreateSnapshot(prefix string, now time.Time) (Snapshot, error) {
 	if _, err := g.run(nil, nil, "update-ref", ref, commit); err != nil {
 		return Snapshot{}, err
 	}
-	return Snapshot{Ref: ref, Commit: commit, Time: now}, nil
+	return Snapshot{Ref: ref, Commit: commit, Tree: tree, Time: now, Meta: meta}, nil
+}
+
+// Checkpoint — автоматическая точка восстановления перед запросом к агенту.
+// Если рабочее дерево не изменилось с последнего снимка, новый не создаётся:
+// возвращается последний (created=false). Старые снимки сверх keep удаляются.
+func (g *Git) Checkpoint(now time.Time, meta SnapshotMeta, keep int) (snap Snapshot, created bool, err error) {
+	tree, err := g.WriteTree()
+	if err != nil {
+		return Snapshot{}, false, err
+	}
+	snaps, err := g.Snapshots(SnapshotRefPrefix)
+	if err != nil {
+		return Snapshot{}, false, err
+	}
+	if len(snaps) > 0 && snaps[0].Tree == tree {
+		return snaps[0], false, nil
+	}
+	snap, err = g.snapshotFromTree(SnapshotRefPrefix, now, tree, meta)
+	if err != nil {
+		return Snapshot{}, false, err
+	}
+	return snap, true, g.Prune(keep)
+}
+
+// Prune оставляет keep самых свежих снимков (keep <= 0 — не удалять ничего).
+func (g *Git) Prune(keep int) error {
+	if keep <= 0 {
+		return nil
+	}
+	snaps, err := g.Snapshots(SnapshotRefPrefix)
+	if err != nil || len(snaps) <= keep {
+		return err
+	}
+	// update-ref --stdin удаляет все лишние ссылки одной командой git.
+	var b strings.Builder
+	for _, s := range snaps[keep:] {
+		fmt.Fprintf(&b, "delete %s\n", s.Ref)
+	}
+	_, err = g.run(nil, strings.NewReader(b.String()), "update-ref", "--stdin")
+	return err
 }
 
 func (g *Git) refExists(ref string) bool {
@@ -149,21 +295,38 @@ func (g *Git) refExists(ref string) bool {
 
 // Snapshots возвращает снапшоты, новые первыми.
 func (g *Git) Snapshots(prefix string) ([]Snapshot, error) {
+	// %00 и %1e в формате for-each-ref — байты NUL и RS: разделители полей
+	// и записей, которых не бывает ни в именах ссылок, ни в тексте запроса.
 	out, err := g.run(nil, nil, "for-each-ref", "--sort=-refname",
-		"--format=%(refname) %(objectname) %(committerdate:unix)", prefix)
+		"--format=%(refname)%00%(objectname)%00%(committerdate:unix)%00%(tree)%00%(contents:body)%1e", prefix)
 	if err != nil {
 		return nil, err
 	}
 	var snaps []Snapshot
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		f := strings.Fields(line)
-		if len(f) != 3 {
+	for _, rec := range strings.Split(out, "\x1e") {
+		f := strings.Split(strings.TrimLeft(rec, "\n"), "\x00")
+		if len(f) != 5 {
 			continue
 		}
 		unix, _ := strconv.ParseInt(f[2], 10, 64) // ошибка → время 0, не критично
-		snaps = append(snaps, Snapshot{Ref: f[0], Commit: f[1], Time: time.Unix(unix, 0)})
+		snaps = append(snaps, Snapshot{Ref: f[0], Commit: f[1], Tree: f[3], Time: time.Unix(unix, 0), Meta: parseMeta(f[4])})
 	}
 	return snaps, nil
+}
+
+// SnapshotAt возвращает n-й снимок с конца (1 — самый свежий).
+func (g *Git) SnapshotAt(n int) (Snapshot, error) {
+	snaps, err := g.Snapshots(SnapshotRefPrefix)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if len(snaps) == 0 {
+		return Snapshot{}, ErrNoSnapshot
+	}
+	if n < 1 || n > len(snaps) {
+		return Snapshot{}, fmt.Errorf("точки %d нет: всего %d (см. holdfast guard list)", n, len(snaps))
+	}
+	return snaps[n-1], nil
 }
 
 // FindSnapshot ищет снапшот по имени; пустое имя — самый свежий.
@@ -232,6 +395,11 @@ func (g *Git) ChangesSince(snap Snapshot) (Changes, error) {
 	if err != nil {
 		return Changes{}, err
 	}
+	return g.changesBetween(snap.Commit+"^{tree}", cur)
+}
+
+// ChangesTo — что изменилось между снимком и деревом cur (из WriteTree).
+func (g *Git) ChangesTo(snap Snapshot, cur string) (Changes, error) {
 	return g.changesBetween(snap.Commit+"^{tree}", cur)
 }
 

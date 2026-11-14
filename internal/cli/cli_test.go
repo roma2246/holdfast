@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/roma2246/holdfast/internal/config"
 )
@@ -208,10 +209,10 @@ deny-paths: secrets/**
 func TestGuardInstallCheckLog(t *testing.T) {
 	dir := t.TempDir()
 	code, out, _ := run(t, "", "-C", dir, "guard", "install")
-	if code != 0 || !strings.Contains(out, "Хук добавлен") {
+	if code != 0 || !strings.Contains(out, "Хуки добавлены") {
 		t.Fatalf("%d %s", code, out)
 	}
-	if _, out, _ := run(t, "", "-C", dir, "guard", "install"); !strings.Contains(out, "уже установлен") {
+	if _, out, _ := run(t, "", "-C", dir, "guard", "install"); !strings.Contains(out, "уже установлены") {
 		t.Fatal(out)
 	}
 
@@ -313,11 +314,52 @@ func TestGuardSnapshotCommands(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "junk.txt")); !os.IsNotExist(err) {
 		t.Fatal("junk.txt должен быть удалён")
 	}
+	// Точки восстановления: хук checkpoint ничего не печатает, list и --to.
+	// После отката дерево совпадает с ручным снимком — новая точка появится,
+	// только если что-то изменилось.
+	os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("моя правка до запроса\n"), 0o644)
+	cp := `{"session_id":"s1","cwd":"` + dir + `","prompt":"сломай и почини"}`
+	if code, out, _ := run(t, cp, "guard", "checkpoint"); code != 0 || out != "" {
+		t.Fatalf("checkpoint должен молчать: %d %q", code, out)
+	}
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main // v2\n"), 0o644)
+	if _, out, _ := run(t, "", "-C", dir, "guard", "list"); !strings.Contains(out, "перед запросом «сломай и почини»") || !strings.Contains(out, "изменено 1") {
+		t.Fatalf("list:\n%s", out)
+	}
+	if _, out, _ := run(t, "", "-C", dir, "guard", "diff", "--to", "1", "--stat"); !strings.Contains(out, "main.go") {
+		t.Fatalf("diff --to:\n%s", out)
+	}
+	if code, out, _ := run(t, "", "-C", dir, "guard", "rollback", "--to", "1", "--yes"); code != 0 || !strings.Contains(out, "сломай и почини") {
+		t.Fatalf("rollback --to: %d\n%s", code, out)
+	}
+	if code, _, errOut := run(t, "", "-C", dir, "guard", "rollback", "--to", "99"); code != ExitFailure || !strings.Contains(errOut, "guard list") {
+		t.Fatalf("неверный номер: %d %s", code, errOut)
+	}
 	if code, _, _ := run(t, "", "-C", dir, "guard", "rollback", "--yes", "--snapshot", "missing"); code != ExitFailure {
 		t.Fatal("неизвестный снапшот должен давать ошибку")
 	}
 	if code, _, _ := run(t, "", "-C", t.TempDir(), "guard", "start"); code != ExitFailure {
 		t.Fatal("start вне git должен падать")
+	}
+}
+
+func TestGuardListEmptyAndHumanAgo(t *testing.T) {
+	dir := t.TempDir()
+	c := exec.Command("git", "init", "-q")
+	c.Dir = dir
+	if err := c.Run(); err != nil {
+		t.Skip("git недоступен")
+	}
+	if _, out, _ := run(t, "", "-C", dir, "guard", "list"); !strings.Contains(out, "пока нет") {
+		t.Fatal(out)
+	}
+	for d, want := range map[time.Duration]string{
+		10 * time.Second: "только что", 5 * time.Minute: "5 мин назад",
+		3 * time.Hour: "3 ч назад", 72 * time.Hour: "3 дн назад",
+	} {
+		if got := humanAgo(d); got != want {
+			t.Errorf("humanAgo(%v) = %q", d, got)
+		}
 	}
 }
 

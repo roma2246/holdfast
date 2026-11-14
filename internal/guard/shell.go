@@ -236,6 +236,10 @@ func (p *Policy) checkCall(c *syntax.CallExpr, depth int) Verdict {
 		v = worst(v, p.checkRm(args[1:], viaXargs))
 	case name == "git":
 		v = worst(v, p.checkGit(args[1:]))
+	case name == "holdfast" && len(args) > 2 && args[1].s == "guard" && args[2].s == "rollback":
+		// Откат перезаписывает файлы проекта, в том числе правки самого
+		// пользователя, — это решает человек, а не агент.
+		v = worst(v, Verdict{Ask, "holdfast-rollback", "откат перезапишет файлы проекта — нужно подтверждение пользователя"})
 	case name == "npm" || name == "pnpm" || name == "yarn" || name == "bun":
 		if hasArg(args[1:], "publish") {
 			v = worst(v, p.soft("npm-publish", name+" publish необратимо публикует пакет",
@@ -643,6 +647,12 @@ func (p *Policy) checkGit(args []word) Verdict {
 	switch sub {
 	case "push":
 		return p.checkPush(rest, p.abs(dir), dirUnknown)
+	case "update-ref":
+		for _, w := range rest {
+			if strings.HasPrefix(w.s, "refs/holdfast") && (hasArg(rest, "-d") || hasArg(rest, "--delete") || hasArg(rest, "--stdin")) {
+				return Verdict{Deny, "holdfast-snapshots", "точки восстановления — страховка пользователя, удалять их агенту нельзя"}
+			}
+		}
 	case "reset":
 		if hasArg(rest, "--hard") {
 			return Verdict{Deny, "git-reset-hard", "git reset --hard безвозвратно стирает незакоммиченные изменения. Используй git stash или git restore <файл> для конкретных файлов"}

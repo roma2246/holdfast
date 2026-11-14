@@ -22,8 +22,10 @@ protected_paths = []
 deny_commands = []
 # Команды, перед которыми агент должен спросить вас (в любом режиме).
 ask_commands = []
-# Сколько файлов можно удалить одной командой без снапшота.
+# Сколько файлов можно удалить одной командой без снимка текущей задачи.
 max_deletes = 5
+# Сколько последних точек восстановления хранить (holdfast guard list).
+keep_snapshots = 50
 
 # Подсказки агенту в момент, когда он трогает эти файлы.
 # Так правила не раздувают CLAUDE.md и приходят вовремя.
@@ -35,17 +37,17 @@ max_deletes = 5
 [[guard.synced.rules]]
 kind = "deny-path"
 pattern = "go.sum"
-source = "CLAUDE.md:39"
+source = "CLAUDE.md:40"
 origin = "explicit"
 
 [[guard.synced.rules]]
 kind = "ask-command"
 pattern = "goreleaser release"
-source = "CLAUDE.md:40"
+source = "CLAUDE.md:41"
 origin = "explicit"
 
 [[guard.synced.rules]]
 kind = "ask-command"
 pattern = "git tag"
-source = "CLAUDE.md:40"
+source = "CLAUDE.md:41"
 origin = "explicit"

@@ -122,7 +122,9 @@ func Evaluate(root string, input HookInput) (Verdict, *Policy) {
 		if err != nil {
 			cfg = nil // битый конфиг — работаем со встроенной политикой
 		}
-		return NewPolicy(root, input.Cwd, cfg)
+		p := NewPolicy(root, input.Cwd, cfg)
+		p.Session = input.SessionID
+		return p
 	}
 	var p *Policy
 	var v Verdict
