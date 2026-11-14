@@ -4,6 +4,8 @@ package main
 
 import (
 	"os"
+	"runtime/debug"
+	"strings"
 
 	"github.com/roma2246/holdfast/internal/cli"
 )
@@ -13,5 +15,19 @@ import (
 var version = "dev"
 
 func main() {
-	os.Exit(cli.Execute(version, os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+	os.Exit(cli.Execute(resolveVersion(version), os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+}
+
+// resolveVersion: при `go install …@v0.1.1` ldflags не задаются, но Go сам
+// встраивает в бинарник версию модуля — берём её из debug.ReadBuildInfo.
+func resolveVersion(v string) string {
+	if v != "dev" {
+		return v
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if mv := info.Main.Version; mv != "" && mv != "(devel)" {
+			return strings.TrimPrefix(mv, "v")
+		}
+	}
+	return v
 }
