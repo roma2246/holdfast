@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// syncedMarker — комментарий над секцией, которую генерирует sync.
+// syncedMarker is the comment above the section that sync generates.
 const syncedMarker = "# --- holdfast sync: this section is generated automatically, do not edit ---"
 
 // legacySyncedMarker is the same comment as written by versions up to 0.3
@@ -20,11 +20,11 @@ const legacySyncedMarker = "# --- holdfast sync: секция генерируе
 var headerRe = regexp.MustCompile(`^\s*\[`)
 var syncedHeaderRe = regexp.MustCompile(`^\s*\[\[?\s*guard\.synced\b`)
 
-// WriteSynced заменяет секцию [guard.synced] в holdfast.toml на rules,
-// сохраняя всё остальное содержимое файла (включая комментарии).
+// WriteSynced replaces the [guard.synced] section in holdfast.toml with rules,
+// keeping the rest of the file's contents (including comments).
 //
-// Мы правим файл как текст, а не «загрузить → изменить → сохранить»,
-// потому что TOML-энкодер потерял бы комментарии и порядок ключей.
+// We edit the file as text rather than "load → modify → save", because
+// a TOML encoder would lose the comments and the key order.
 func WriteSynced(root string, rules []SyncedRule) error {
 	path := filepath.Join(root, FileName)
 	data, err := os.ReadFile(path)
@@ -51,7 +51,7 @@ func WriteSynced(root string, rules []SyncedRule) error {
 	return os.WriteFile(path, []byte(text), 0o644)
 }
 
-// StripSynced удаляет из текста конфига сгенерированную секцию guard.synced.
+// StripSynced removes the generated guard.synced section from the config text.
 func StripSynced(text string) string {
 	if text == "" {
 		return ""
@@ -73,7 +73,7 @@ func StripSynced(text string) string {
 	return strings.TrimRight(strings.Join(out, "\n"), "\n") + "\n"
 }
 
-// quote превращает строку в базовую строку TOML ("...").
+// quote turns a string into a TOML basic string ("...").
 func quote(s string) string {
 	var b strings.Builder
 	b.WriteByte('"')

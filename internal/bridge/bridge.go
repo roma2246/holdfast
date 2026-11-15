@@ -1,10 +1,10 @@
-// Package bridge превращает запреты из CLAUDE.md в политики guard.
+// Package bridge turns the prohibitions in CLAUDE.md into guard policies.
 //
-// Два источника правил:
-//   - явный блок <!-- holdfast deny-paths: ... ask-commands: ... --> —
-//     надёжный, применяется сразу;
-//   - эвристики по тексту («never edit X», «не трогай X») — требуют
-//     подтверждения пользователя.
+// Two sources of rules:
+//   - an explicit block <!-- holdfast deny-paths: ... ask-commands: ... -->,
+//     which is reliable and applied right away;
+//   - heuristics over the text ("never edit X", "don't touch X" and their
+//     Russian equivalents), which need the user's confirmation.
 package bridge
 
 import (
@@ -15,36 +15,36 @@ import (
 	"github.com/roma2246/holdfast/internal/config"
 )
 
-// Происхождение правила.
+// Origin of a rule.
 const (
 	OriginExplicit  = "explicit"
 	OriginHeuristic = "heuristic"
 )
 
-// Rule — правило, извлечённое из файла инструкций.
+// Rule is a rule extracted from an instructions file.
 type Rule struct {
 	Kind    string // config.KindDenyPath, ...
 	Pattern string
 	File    string
 	Line    int
 	Origin  string
-	Text    string // исходная фраза (для показа пользователю)
+	Text    string // the original phrase (shown to the user)
 }
 
-// Source — «CLAUDE.md:12».
+// Source is "CLAUDE.md:12".
 func (r Rule) Source() string { return fmt.Sprintf("%s:%d", r.File, r.Line) }
 
-// ToSynced превращает правило в запись секции [guard.synced].
+// ToSynced turns the rule into an entry of the [guard.synced] section.
 func (r Rule) ToSynced() config.SyncedRule {
 	return config.SyncedRule{Kind: r.Kind, Pattern: r.Pattern, Source: r.Source(), Origin: r.Origin}
 }
 
-// IsPath — правило про пути (иначе про команды).
+// IsPath reports whether the rule is about paths (otherwise about commands).
 func (r Rule) IsPath() bool {
 	return r.Kind == config.KindDenyPath || r.Kind == config.KindAskPath
 }
 
-// Extract возвращает явные и эвристические правила файла.
+// Extract returns the explicit and heuristic rules of a file.
 func Extract(file string, lines []string) []Rule {
 	return append(ExtractExplicit(file, lines), ExtractHeuristic(file, lines)...)
 }
@@ -54,9 +54,9 @@ var (
 	blockKeyRe   = regexp.MustCompile(`\b(deny|ask)-(paths?|commands?)\s*:`)
 )
 
-// ExtractExplicit разбирает блоки <!-- holdfast ... -->. Блок может быть
-// однострочным или многострочным; ключи: deny-paths, ask-paths,
-// deny-commands, ask-commands; значения через запятую.
+// ExtractExplicit parses <!-- holdfast ... --> blocks. A block may be
+// single-line or multi-line; the keys are deny-paths, ask-paths,
+// deny-commands, ask-commands; values are comma-separated.
 func ExtractExplicit(file string, lines []string) []Rule {
 	var out []Rule
 	for i := 0; i < len(lines); i++ {
@@ -64,8 +64,8 @@ func ExtractExplicit(file string, lines []string) []Rule {
 		if loc == nil {
 			continue
 		}
-		// Собираем текст блока до "-->", запоминая, с какой строки
-		// начинается каждый фрагмент, чтобы знать номер строки правила.
+		// Collect the block text up to "-->", remembering which line each
+		// fragment starts on, so that we know the rule's line number.
 		type chunk struct {
 			text string
 			line int
@@ -90,7 +90,7 @@ func ExtractExplicit(file string, lines []string) []Rule {
 		kind := ""
 		for _, c := range chunks {
 			keys := blockKeyRe.FindAllStringSubmatchIndex(c.text, -1)
-			// Текст до первого ключа строки продолжает предыдущий ключ.
+			// Text before the first key on a line continues the previous key.
 			segStart := 0
 			for ki := 0; ki <= len(keys); ki++ {
 				segEnd := len(c.text)
@@ -144,7 +144,7 @@ var (
 	fenceRe = regexp.MustCompile("^\\s*(```|~~~)")
 )
 
-// ExtractHeuristic ищет фразы-запреты в обычном тексте (вне блоков кода).
+// ExtractHeuristic looks for prohibition phrases in plain text (outside code blocks).
 func ExtractHeuristic(file string, lines []string) []Rule {
 	var out []Rule
 	inFence := false
@@ -180,12 +180,12 @@ func ExtractHeuristic(file string, lines []string) []Rule {
 	return out
 }
 
-// looksLikePath отсекает «never edit code» — нужен '/', '.', или '*'.
+// looksLikePath rejects "never edit code": a '/', '.' or '*' is required.
 func looksLikePath(s string) bool {
 	return s != "" && !strings.Contains(s, " ") && strings.ContainsAny(s, "/.*") && s != "." && s != ".."
 }
 
-// normalize приводит путь к glob: "./migrations/" → "migrations/**".
+// normalize brings a path to glob form: "./migrations/" → "migrations/**".
 func normalize(kind, v string) string {
 	v = strings.TrimSpace(v)
 	if kind != config.KindDenyPath && kind != config.KindAskPath {
@@ -198,7 +198,7 @@ func normalize(kind, v string) string {
 	return v
 }
 
-// Covered — есть ли такое правило в политике guard (с учётом синхронизированных).
+// Covered reports whether the guard policy already has such a rule (synced ones included).
 func Covered(r Rule, g *config.GuardConfig) bool {
 	for _, s := range g.Synced.Rules {
 		if s.Pattern == r.Pattern && (r.IsPath() == (s.Kind == config.KindDenyPath || s.Kind == config.KindAskPath)) {
@@ -219,8 +219,8 @@ func Covered(r Rule, g *config.GuardConfig) bool {
 	return false
 }
 
-// Dedupe убирает повторы (одинаковые вид+шаблон), оставляя первое
-// вхождение; явные правила важнее эвристических.
+// Dedupe removes repeats (same kind+pattern), keeping the first
+// occurrence; explicit rules take priority over heuristic ones.
 func Dedupe(rules []Rule) []Rule {
 	seen := map[string]bool{}
 	var out []Rule

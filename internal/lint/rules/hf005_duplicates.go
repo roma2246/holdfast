@@ -17,15 +17,15 @@ func (duplicatesRule) Description() string {
 	return "Duplicate or near-identical items"
 }
 
-// Порог похожести из ТЗ: > 90%.
+// The similarity threshold: > 90%.
 const similarityThreshold = 0.9
 
-// minWords — короткие строки («## Tests», «- Go») не сравниваем.
+// minWords: short lines ("## Tests", "- Go") are not compared.
 const minWords = 3
 
-// Words разбивает строку на множество слов в нижнем регистре.
-// map[string]struct{} — идиоматичное «множество» в Go: struct{} не
-// занимает памяти, нам важны только ключи.
+// Words splits a string into a set of lower-case words.
+// map[string]struct{} is the idiomatic "set" in Go: struct{} takes no
+// memory, only the keys matter to us.
 func Words(s string) map[string]struct{} {
 	set := map[string]struct{}{}
 	for _, w := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
@@ -36,7 +36,7 @@ func Words(s string) map[string]struct{} {
 	return set
 }
 
-// Jaccard — мера Жаккара: |A ∩ B| / |A ∪ B|.
+// Jaccard is the Jaccard index: |A ∩ B| / |A ∪ B|.
 func Jaccard(a, b map[string]struct{}) float64 {
 	if len(a) == 0 && len(b) == 0 {
 		return 1

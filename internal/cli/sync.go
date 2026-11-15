@@ -69,7 +69,7 @@ func (a *app) runSync(yes, noHeuristics, dryRun bool) error {
 	}
 	found = bridge.Dedupe(found)
 
-	// Ранее подтверждённые эвристические правила не спрашиваем повторно.
+	// Heuristic rules confirmed earlier are not asked about again.
 	confirmed := map[string]bool{}
 	for _, r := range cfg.Guard.Synced.Rules {
 		if r.Origin == bridge.OriginHeuristic {

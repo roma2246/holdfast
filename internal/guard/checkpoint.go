@@ -12,24 +12,24 @@ import (
 	"github.com/roma2246/holdfast/internal/config"
 )
 
-// PromptInput — поля JSON, который Claude Code передаёт хуку UserPromptSubmit.
+// PromptInput is the fields of the JSON that Claude Code passes to a UserPromptSubmit hook.
 type PromptInput struct {
 	SessionID string `json:"session_id"`
 	Cwd       string `json:"cwd"`
 	Prompt    string `json:"prompt"`
 }
 
-// RunCheckpoint — реализация `holdfast guard checkpoint`: точка восстановления
-// перед каждым запросом пользователя к агенту.
+// RunCheckpoint implements `holdfast guard checkpoint`: a restore point
+// before every prompt the user sends to the agent.
 //
-// Хук UserPromptSubmit не должен мешать работе: при успехе он ничего не
-// печатает (обычный вывод этого хука Claude Code добавил бы в контекст
-// агента), никогда не падает и молча пропускает папки без git.
+// The UserPromptSubmit hook must stay out of the way: on success it prints
+// nothing (Claude Code would add this hook's regular output to the agent's
+// context), it never crashes and it silently skips directories without git.
 //
-// Если точку создать не удалось, молчать нельзя: пользователь считал бы, что
-// страховка есть. Хук пишет ошибку в журнал, в .holdfast/checkpoint-error
-// (её покажет `holdfast guard list`) и возвращает systemMessage — сообщение,
-// которое Claude Code показывает пользователю.
+// If the restore point could not be created, staying silent is not an option:
+// the user would believe the safety net is there. The hook writes the error to
+// the log and to .holdfast/checkpoint-error (`holdfast guard list` shows it)
+// and returns a systemMessage, a message that Claude Code shows to the user.
 func RunCheckpoint(stdin io.Reader, stdout io.Writer, env HookEnv) {
 	var (
 		in   PromptInput
@@ -55,13 +55,13 @@ func RunCheckpoint(stdin io.Reader, stdout io.Writer, env HookEnv) {
 
 	data, err := io.ReadAll(io.LimitReader(stdin, 16<<20))
 	if err == nil {
-		_ = json.Unmarshal(data, &in) // нет JSON — снимок всё равно полезен
+		_ = json.Unmarshal(data, &in) // no JSON: a snapshot is still useful
 	}
 	root = projectRoot(HookInput{Cwd: in.Cwd}, env)
 	g, err := OpenGit(root)
 	if err != nil {
 		root = ""
-		return // не git-репозиторий: снимки невозможны, это не ошибка
+		return // not a git repository: snapshots are impossible, and that is not an error
 	}
 	if err := EnsureStateDir(root); err != nil {
 		fail(err.Error())
@@ -91,7 +91,7 @@ func checkpointErrorPath(root string) string {
 	return filepath.Join(root, StateDir, "checkpoint-error")
 }
 
-// LastCheckpointError — текст ошибки последней неудачной точки ("" — всё в порядке).
+// LastCheckpointError is the error text of the last failed restore point ("" means all is well).
 func LastCheckpointError(root string) string {
 	data, err := os.ReadFile(checkpointErrorPath(root))
 	if err != nil {

@@ -14,21 +14,21 @@ import (
 	"github.com/roma2246/holdfast/internal/config"
 )
 
-// Тесты этого файла проверяют не отдельные примеры, а свойства, которые
-// Holdfast обещает пользователю (по итогам внешнего ревью):
+// The tests in this file check not individual examples but the properties
+// Holdfast promises to the user (following an external review):
 //
-//   - всё, что откат перезаписал или удалил, сохранено в резервной копии —
-//     либо откат не начинается;
-//   - снимок другого рабочего дерева не выбирается;
-//   - массовое удаление разрешается, только если удаляемое есть в точке;
-//   - неудачная точка не выглядит как успешная;
-//   - ошибка конфига не ослабляет защиту;
-//   - дочерний shell не меняет контекст родителя;
-//   - эквивалентные формы команды получают одинаковое решение: правила
-//     путей применяются к итоговым файлам, push — к итоговой ветке;
-//   - служебные файлы Holdfast агент не меняет ни одной формой.
+//   - everything a rollback overwrote or deleted is saved in the backup,
+//     or else the rollback does not start;
+//   - a snapshot of another working tree is never picked;
+//   - mass deletion is allowed only if what is deleted is in the restore point;
+//   - a failed restore point does not look like a successful one;
+//   - a config error does not weaken the protection;
+//   - a child shell does not change the parent's context;
+//   - equivalent forms of a command get the same decision: path rules
+//     apply to the resulting files, push rules to the resulting branch;
+//   - the agent cannot change Holdfast's service files in any form.
 
-// diskState читает все файлы рабочего дерева (включая игнорируемые), кроме .git.
+// diskState reads all files of the working tree (ignored ones included), except .git.
 func diskState(t *testing.T, dir string) map[string]string {
 	t.Helper()
 	state := map[string]string{}
@@ -59,11 +59,11 @@ func diskState(t *testing.T, dir string) map[string]string {
 func TestRollbackNeverLosesData(t *testing.T) {
 	scenarios := []struct {
 		name string
-		// before — состояние на момент точки; after — что произошло потом.
+		// before is the state at the restore point; after is what happened later.
 		before, after func(t *testing.T, dir string)
 	}{
 		{
-			name:   "обычные правки, новый и удалённый файл",
+			name:   "regular edits, a new file and a deleted file",
 			before: func(t *testing.T, dir string) { write(t, dir, "keep.txt", "v1\n") },
 			after: func(t *testing.T, dir string) {
 				write(t, dir, "a.txt", "agent\n")
@@ -72,8 +72,8 @@ func TestRollbackNeverLosesData(t *testing.T) {
 			},
 		},
 		{
-			// Сценарий из ревью: файл попал в .gitignore уже после точки.
-			name:   "файл стал игнорируемым и изменился",
+			// The scenario from the review: the file got into .gitignore after the restore point.
+			name:   "a file became ignored and changed",
 			before: func(t *testing.T, dir string) { write(t, dir, "local.txt", "v1\n") },
 			after: func(t *testing.T, dir string) {
 				write(t, dir, ".gitignore", "*.log\nlocal.txt\n")
@@ -81,7 +81,7 @@ func TestRollbackNeverLosesData(t *testing.T) {
 			},
 		},
 		{
-			name:   "на месте файла — папка с игнорируемым содержимым",
+			name:   "a directory with ignored contents where a file was",
 			before: func(t *testing.T, dir string) { write(t, dir, "data", "file\n") },
 			after: func(t *testing.T, dir string) {
 				os.Remove(filepath.Join(dir, "data"))
@@ -90,7 +90,7 @@ func TestRollbackNeverLosesData(t *testing.T) {
 			},
 		},
 		{
-			name:   "на месте папки — игнорируемый файл",
+			name:   "an ignored file where a directory was",
 			before: func(t *testing.T, dir string) { write(t, dir, "conf/app.txt", "v1\n") },
 			after: func(t *testing.T, dir string) {
 				os.RemoveAll(filepath.Join(dir, "conf"))
@@ -99,7 +99,7 @@ func TestRollbackNeverLosesData(t *testing.T) {
 			},
 		},
 		{
-			name:   "игнорируемый файл, которого не было в точке, не трогается",
+			name:   "an ignored file that was not in the restore point is left alone",
 			before: func(t *testing.T, dir string) {},
 			after: func(t *testing.T, dir string) {
 				write(t, dir, "debug.log", "my log\n")
@@ -125,49 +125,49 @@ func TestRollbackNeverLosesData(t *testing.T) {
 
 			_, backup, err := g.Rollback(snap, time.Now())
 			if err != nil {
-				t.Fatalf("откат: %v", err)
+				t.Fatalf("rollback: %v", err)
 			}
 			afterRollback := diskState(t, dir)
 
-			// Свойство 1: каждый изменённый или исчезнувший при откате файл
-			// сохранён в резервной копии с прежним содержимым.
+			// Property 1: every file changed or removed by the rollback is
+			// saved in the backup with its previous contents.
 			for path, old := range beforeRollback {
 				if now, ok := afterRollback[path]; ok && now == old {
 					continue
 				}
 				saved, err := g.run(nil, nil, "show", backup.Ref+":"+path)
 				if err != nil || saved != old {
-					t.Errorf("ПОТЕРЯ ДАННЫХ: %s изменён откатом, а в резервной копии его нет (%v)", path, err)
+					t.Errorf("DATA LOSS: %s was changed by the rollback but is not in the backup (%v)", path, err)
 				}
 			}
-			// Свойство 2: всё, что было в точке, вернулось.
+			// Property 2: everything that was in the restore point is back.
 			saved, err := g.TreeFiles(snap.Tree, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			for path := range saved {
 				if afterRollback[path] != atSnapshot[path] {
-					t.Errorf("%s не восстановлен: %q, в точке было %q", path, afterRollback[path], atSnapshot[path])
+					t.Errorf("%s not restored: %q, the restore point had %q", path, afterRollback[path], atSnapshot[path])
 				}
 			}
-			// Свойство 3: откат можно отменить штатной командой.
+			// Property 3: the rollback can be undone with the regular command.
 			undo, err := g.FindSnapshot(backup.Name())
 			if err != nil {
-				t.Fatalf("резервная копия не находится по имени: %v", err)
+				t.Fatalf("the backup can't be found by name: %v", err)
 			}
 			if _, _, err := g.Rollback(undo, time.Now()); err != nil {
-				t.Fatalf("отмена отката: %v", err)
+				t.Fatalf("undoing the rollback: %v", err)
 			}
 			for path, old := range beforeRollback {
 				if got := diskState(t, dir)[path]; got != old {
-					t.Errorf("после отмены отката %s = %q, было %q", path, got, old)
+					t.Errorf("after undoing the rollback %s = %q, was %q", path, got, old)
 				}
 			}
 		})
 	}
 }
 
-// Если сохранить перезаписываемое нельзя, откат не начинается.
+// If what would be overwritten can't be saved, the rollback does not start.
 func TestRollbackStopsWhenBackupImpossible(t *testing.T) {
 	dir := gitRepo(t, true)
 	write(t, dir, "vendor", "file\n")
@@ -176,7 +176,7 @@ func TestRollbackStopsWhenBackupImpossible(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// На месте файла — вложенный git-репозиторий: git не сохранит его содержимое.
+	// A nested git repository where a file was: git won't save its contents.
 	os.Remove(filepath.Join(dir, "vendor"))
 	write(t, dir, "vendor/lib.txt", "someone else's code\n")
 	git(t, filepath.Join(dir, "vendor"), "init", "-q")
@@ -185,15 +185,15 @@ func TestRollbackStopsWhenBackupImpossible(t *testing.T) {
 	before := diskState(t, dir)
 
 	if _, _, err := g.Rollback(snap, time.Now()); err == nil || !strings.Contains(err.Error(), "rollback is cancelled") {
-		t.Fatalf("ожидался отказ от отката, получено: %v", err)
+		t.Fatalf("expected the rollback to be refused, got: %v", err)
 	}
 	after := diskState(t, dir)
 	if len(before) != len(after) || after["vendor/lib.txt"] != "someone else's code\n" {
-		t.Fatalf("после отказа рабочее дерево изменилось: %v", after)
+		t.Fatalf("the working tree changed after the refusal: %v", after)
 	}
 
-	// Вложенный репозиторий, появившийся после точки на новом месте, откат
-	// оставляет как есть, а остальное откатывает.
+	// A nested repository that appeared after the restore point in a new place
+	// is left as is by the rollback, and the rest is rolled back.
 	dir2 := gitRepo(t, true)
 	g2, _ := OpenGit(dir2)
 	snap2, _ := g2.CreateSnapshot(time.Now(), SnapshotMeta{})
@@ -204,13 +204,13 @@ func TestRollbackStopsWhenBackupImpossible(t *testing.T) {
 	write(t, dir2, "a.txt", "agent\n")
 	plan, err := g2.PlanRollback(snap2)
 	if err != nil || len(plan.Skipped) != 1 || plan.Skipped[0] != "cloned" {
-		t.Fatalf("план: %+v %v", plan, err)
+		t.Fatalf("plan: %+v %v", plan, err)
 	}
 	if _, _, err := g2.Rollback(snap2, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if read(t, dir2, "a.txt") != "original a\n" || read(t, dir2, "cloned/lib.txt") != "clone\n" {
-		t.Fatal("a.txt должен откатиться, вложенный репозиторий — остаться")
+		t.Fatal("a.txt must be rolled back, the nested repository must stay")
 	}
 }
 
@@ -223,30 +223,30 @@ func TestWorktreesAreIsolated(t *testing.T) {
 	gMain, _ := OpenGit(main)
 	gOther, _ := OpenGit(other)
 	if gMain.worktreeID() != "main" || !strings.HasPrefix(gOther.worktreeID(), "wt-") {
-		t.Fatalf("идентификаторы: %q %q", gMain.worktreeID(), gOther.worktreeID())
+		t.Fatalf("identifiers: %q %q", gMain.worktreeID(), gOther.worktreeID())
 	}
 	snapOther, err := gOther.CreateSnapshot(time.Now(), SnapshotMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Снимок второго дерева не виден из первого — ни в списке, ни по имени.
+	// The second tree's snapshot is not visible from the first, neither in the list nor by name.
 	if snaps, _ := gMain.Snapshots(); len(snaps) != 0 {
-		t.Fatalf("в основном дереве виден чужой снимок: %+v", snaps)
+		t.Fatalf("a foreign snapshot is visible in the main tree: %+v", snaps)
 	}
 	if _, err := gMain.FindSnapshot(""); err == nil {
-		t.Fatal("FindSnapshot выбрал снимок другого дерева")
+		t.Fatal("FindSnapshot picked another tree's snapshot")
 	}
 	if _, err := gMain.FindSnapshot(snapOther.Ref); err == nil {
-		t.Fatal("снимок другого дерева найден по полной ссылке")
+		t.Fatal("another tree's snapshot was found by its full ref")
 	}
-	// Даже если снимок передан напрямую, откат отказывается.
+	// Even when the snapshot is passed in directly, the rollback refuses.
 	if _, _, err := gMain.Rollback(snapOther, time.Now()); err == nil || !strings.Contains(err.Error(), "another working tree") {
-		t.Fatalf("откат к чужому снимку: %v", err)
+		t.Fatalf("rollback to a foreign snapshot: %v", err)
 	}
 	if got := read(t, main, "a.txt"); got != "original a\n" {
-		t.Fatalf("основное дерево изменено: %q", got)
+		t.Fatalf("the main tree was changed: %q", got)
 	}
-	// Очистка одного дерева не трогает снимки другого.
+	// Pruning one tree does not touch the other's snapshots.
 	if _, err := gMain.CreateSnapshot(time.Now(), SnapshotMeta{}); err != nil {
 		t.Fatal(err)
 	}
@@ -260,14 +260,14 @@ func TestWorktreesAreIsolated(t *testing.T) {
 	mainSnaps, _ := gMain.Snapshots()
 	otherSnaps, _ := gOther.Snapshots()
 	if len(mainSnaps) != 1 || len(otherSnaps) != 1 {
-		t.Fatalf("после очистки: main=%d other=%d", len(mainSnaps), len(otherSnaps))
+		t.Fatalf("after pruning: main=%d other=%d", len(mainSnaps), len(otherSnaps))
 	}
 }
 
 func TestSnapshotOrder(t *testing.T) {
 	dir := gitRepo(t, true)
 	g, _ := OpenGit(dir)
-	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC) // все снимки «в один момент»
+	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC) // all snapshots "at the same instant"
 	var last Snapshot
 	for i := 0; i < 15; i++ {
 		write(t, dir, "a.txt", fmt.Sprintf("v%d\n", i))
@@ -278,28 +278,28 @@ func TestSnapshotOrder(t *testing.T) {
 		last = s
 		newest, err := g.FindSnapshot("")
 		if err != nil || newest.Ref != last.Ref {
-			t.Fatalf("шаг %d: самым свежим выбран %s, а создан %s", i, newest.Name(), last.Name())
+			t.Fatalf("step %d: %s was picked as the newest, but %s was created last", i, newest.Name(), last.Name())
 		}
 	}
-	// Снимки старого формата (…-000, …-000-2, …-000-12) тоже по порядку.
+	// Snapshots in the old format (…-000, …-000-2, …-000-12) are in order too.
 	names := []string{"20261114-134625-000", "20261114-134625-000-2", "20261114-134625-000-9", "20261114-134625-000-12"}
 	for i := 1; i < len(names); i++ {
 		if nameKey(names[i-1]) >= nameKey(names[i]) {
-			t.Errorf("порядок старых имён: %s должен быть раньше %s", names[i-1], names[i])
+			t.Errorf("order of old names: %s must come before %s", names[i-1], names[i])
 		}
 	}
 	if nameKey("20261114-134625-000-12") >= nameKey("20261114-134626-000000001") {
-		t.Error("новый формат должен быть позже старого из предыдущей секунды")
+		t.Error("the new format must sort after an old one from the previous second")
 	}
-	// Старый снимок в refs/holdfast/<имя> виден в основном дереве.
+	// An old snapshot in refs/holdfast/<name> is visible in the main tree.
 	git(t, dir, "update-ref", "refs/holdfast/20200101-000000-000", last.Commit)
 	snaps, _ := g.Snapshots()
 	if got := snaps[len(snaps)-1].Name(); got != "20200101-000000-000" {
-		t.Errorf("старый снимок должен быть последним в списке, а там %s", got)
+		t.Errorf("the old snapshot must be last in the list, but %s is", got)
 	}
 }
 
-// realProject — настоящий git-репозиторий для проверки обратимости.
+// realProject is a real git repository for checking reversibility.
 func realProject(t *testing.T) (*Policy, string) {
 	t.Helper()
 	dir := gitRepo(t, false)
@@ -317,7 +317,7 @@ func realProject(t *testing.T) (*Policy, string) {
 	p := NewPolicy(dir, dir, &config.GuardConfig{})
 	p.Home = fakeHome
 	p.Session = "s1"
-	p.tempDirs = nil // фикстуры лежат во временной папке
+	p.tempDirs = nil // the fixtures live in a temp directory
 	return p, dir
 }
 
@@ -332,22 +332,22 @@ func TestMassDeleteOnlyWhenCovered(t *testing.T) {
 		want Decision
 		rule string
 	}{
-		{"rm -r assets", Allow, ""},                      // отслеживаются git → попадут в точку
-		{"rm -r drafts", Allow, ""},                      // новые, не игнорируются → попадут в точку
-		{"rm drafts/*.md", Allow, ""},                    // то же через glob
-		{"rm -rf node_modules", Allow, ""},               // пересоздаваемая папка
-		{"rm -rf local", Deny, "mass-delete"},            // игнорируется → точка не вернёт
-		{"rm -rf assets local", Deny, "mass-delete"},     // смешанный случай
-		{"find assets -name '*.png' -delete", Allow, ""}, // под фильтр подходит только отслеживаемое
+		{"rm -r assets", Allow, ""},                      // tracked by git → will be in the restore point
+		{"rm -r drafts", Allow, ""},                      // new, not ignored → will be in the restore point
+		{"rm drafts/*.md", Allow, ""},                    // the same through a glob
+		{"rm -rf node_modules", Allow, ""},               // a disposable directory
+		{"rm -rf local", Deny, "mass-delete"},            // ignored → the restore point won't bring it back
+		{"rm -rf assets local", Deny, "mass-delete"},     // a mixed case
+		{"find assets -name '*.png' -delete", Allow, ""}, // only tracked files match the filter
 		{"find . -name '*.bin' -delete", Deny, "mass-delete"},
-		{"find . -type f -delete", Deny, "delete-git-dir"}, // удалит и .git со всеми точками
+		{"find . -type f -delete", Deny, "delete-git-dir"}, // would delete .git with all the restore points too
 		{"find . -name 'HEAD' -delete", Deny, "delete-git-dir"},
 		{"rm -rf .git", Deny, "delete-git-dir"},
 		{"find " + outside + " -type f -delete", Deny, "rm-outside-repo"},
 		{"find .. -type f -delete", Deny, "rm-outside-repo"},
 		{"find $DIR -delete", Deny, "rm-dynamic"},
-		{"git clean -fd", Allow, ""},                            // 7 неотслеживаемых → в точке
-		{"git -C " + outside + " clean -fd", Deny, "git-clean"}, // чужой репозиторий
+		{"git clean -fd", Allow, ""},                            // 7 untracked → in the restore point
+		{"git -C " + outside + " clean -fd", Deny, "git-clean"}, // someone else's repository
 		{"cd " + outside + " && git clean -fd", Deny, "git-clean"},
 		{"git clean -fdx", Deny, "git-clean"},
 	}
@@ -360,34 +360,34 @@ func TestMassDeleteOnlyWhenCovered(t *testing.T) {
 		})
 	}
 
-	// Свойство: если массовое удаление разрешено, то каждый удаляемый файл
-	// действительно лежит в самой свежей точке — её сделал сам хук.
+	// The property: if a mass deletion is allowed, every file being deleted
+	// really is in the most recent restore point, the one the hook itself took.
 	g, _ := OpenGit(dir)
 	snaps, err := g.Snapshots()
 	if err != nil || len(snaps) == 0 || snaps[0].Meta.Kind != KindPreDelete || snaps[0].Meta.Session != "s1" {
-		t.Fatalf("точка перед удалением не создана: %+v %v", snaps, err)
+		t.Fatalf("no restore point was created before the deletion: %+v %v", snaps, err)
 	}
 	saved, _ := g.TreeFiles(snaps[0].Tree, nil)
 	for i := 0; i < 7; i++ {
 		for _, f := range []string{fmt.Sprintf("assets/%d.png", i), fmt.Sprintf("drafts/%d.md", i)} {
 			if !saved[f] {
-				t.Errorf("%s нет в точке, хотя удаление было разрешено", f)
+				t.Errorf("%s is not in the restore point although the deletion was allowed", f)
 			}
 		}
 		if saved[fmt.Sprintf("local/%d.bin", i)] {
-			t.Errorf("игнорируемый файл оказался в точке")
+			t.Errorf("an ignored file ended up in the restore point")
 		}
 	}
-	// Подсказка при отказе объясняет причину и не предлагает обходов.
+	// The hint on denial explains the reason and suggests no workarounds.
 	v := p.CheckCommand("rm -rf local")
 	if !strings.Contains(v.Reason, "local/0.bin") || !strings.Contains(v.Reason, "ask the user") {
-		t.Errorf("подсказка: %s", v.Reason)
+		t.Errorf("hint: %s", v.Reason)
 	}
 }
 
 func TestFailedCheckpointIsVisibleAndGrantsNothing(t *testing.T) {
 	if os.Getuid() == 0 {
-		t.Skip("root игнорирует права доступа")
+		t.Skip("root ignores file permissions")
 	}
 	p, dir := realProject(t)
 	env := testEnv(dir)
@@ -395,10 +395,10 @@ func TestFailedCheckpointIsVisibleAndGrantsNothing(t *testing.T) {
 	var out bytes.Buffer
 	RunCheckpoint(strings.NewReader(in), &out, env)
 	if out.Len() != 0 || LastCheckpointError(dir) != "" {
-		t.Fatalf("успешная точка должна быть молчаливой: %q %q", out.String(), LastCheckpointError(dir))
+		t.Fatalf("a successful restore point must be silent: %q %q", out.String(), LastCheckpointError(dir))
 	}
 
-	// Следующую точку записать нельзя.
+	// The next restore point can't be written.
 	refs := filepath.Join(dir, ".git", "refs", "holdfast")
 	if err := filepath.WalkDir(refs, func(path string, d fs.DirEntry, _ error) error {
 		if d != nil && d.IsDir() {
@@ -423,19 +423,19 @@ func TestFailedCheckpointIsVisibleAndGrantsNothing(t *testing.T) {
 		SystemMessage string `json:"systemMessage"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &msg); err != nil || !strings.Contains(msg.SystemMessage, "NO restore point was created") {
-		t.Fatalf("пользователь не предупреждён: %q (%v)", out.String(), err)
+		t.Fatalf("the user was not warned: %q (%v)", out.String(), err)
 	}
 	if LastCheckpointError(dir) == "" {
-		t.Fatal("ошибка точки не сохранена для guard list")
+		t.Fatal("the restore point error was not saved for guard list")
 	}
 	entries, _ := ReadLog(dir)
 	if last := entries[len(entries)-1]; last.Rule != "error" {
-		t.Fatalf("в журнале нет ошибки: %+v", last)
+		t.Fatalf("the log has no error: %+v", last)
 	}
-	// Старая точка не даёт права на массовое удаление: хук пробует сделать
-	// новую, не может — и запрещает.
+	// An old restore point gives no right to a mass deletion: the hook tries
+	// to take a new one, can't, and denies.
 	if v := p.CheckCommand("rm -r assets"); v.Decision != Deny || !strings.Contains(v.Reason, "could not save a restore point") {
-		t.Fatalf("после неудачной точки: %s [%s]", v.Decision, v.Reason)
+		t.Fatalf("after a failed restore point: %s [%s]", v.Decision, v.Reason)
 	}
 }
 
@@ -468,10 +468,10 @@ func TestBrokenConfigDoesNotWeakenProtection(t *testing.T) {
 		before[name], _ = decide(tools[name], input)
 	}
 	if before["write-protected"] != "ask" || before["deny-command"] != "deny" || before["plain-command"] != "allow" {
-		t.Fatalf("исходные решения: %v", before)
+		t.Fatalf("baseline decisions: %v", before)
 	}
 
-	// Опечатка в конфиге (два варианта): защита не должна стать слабее ни в одном случае.
+	// A typo in the config (two variants): the protection must not get weaker in either case.
 	rank := map[string]int{"allow": 0, "ask": 1, "deny": 2}
 	for _, broken := range []string{
 		"[guard]\nmode = \"typo\"\nprotected_paths = [\"migrations/**\"]\ndeny_commands = [\"terraform destroy\"]\n",
@@ -480,21 +480,21 @@ func TestBrokenConfigDoesNotWeakenProtection(t *testing.T) {
 		write(t, root, "holdfast.toml", broken)
 		for name, input := range cases {
 			got, reason := decide(tools[name], input)
-			// deny_commands при нечитаемом конфиге недоступен — но действие
-			// хотя бы требует подтверждения, а не проходит молча.
+			// deny_commands is unavailable with an unreadable config, but the
+			// action at least needs confirmation instead of passing silently.
 			floor := before[name]
 			if floor == "deny" && name == "deny-command" {
 				floor = "ask"
 			}
 			if rank[got] < rank[floor] || (got == "allow") {
-				t.Errorf("%s: при битом конфиге %s (было %s) — защита ослаблена", name, got, before[name])
+				t.Errorf("%s: with a broken config %s (was %s): the protection got weaker", name, got, before[name])
 			}
 			if got == "ask" && !strings.Contains(reason, "holdfast.toml") {
-				t.Errorf("%s: причина не объясняет проблему с конфигом: %s", name, reason)
+				t.Errorf("%s: the reason does not explain the config problem: %s", name, reason)
 			}
 		}
 		if got, _ := decide("Read", map[string]any{"file_path": filepath.Join(root, "README.md")}); got != "allow" {
-			t.Errorf("чтение при битом конфиге: %s", got)
+			t.Errorf("read with a broken config: %s", got)
 		}
 	}
 	entries, _ := ReadLog(root)
@@ -503,11 +503,11 @@ func TestBrokenConfigDoesNotWeakenProtection(t *testing.T) {
 		found = found || e.Rule == "config-error"
 	}
 	if !found {
-		t.Error("в журнале нет события config-error")
+		t.Error("the log has no config-error event")
 	}
 }
 
-// Обёртки и эквивалентные формы команды получают то же решение.
+// Wrappers and equivalent forms of a command get the same decision.
 func TestEquivalentFormsGetSameDecision(t *testing.T) {
 	p := autoPolicy(t, fakeRepo(t, "ref: refs/heads/dev"))
 	for _, cmd := range []string{
@@ -526,7 +526,7 @@ func TestEquivalentFormsGetSameDecision(t *testing.T) {
 		}
 	}
 	if got := p.CheckCommand("env -u TEST go test ./..."); got.Decision != Allow {
-		t.Errorf("безобидная команда через env: %s", got.Decision)
+		t.Errorf("a harmless command through env: %s", got.Decision)
 	}
 }
 
@@ -536,7 +536,7 @@ func TestInstallEdgeCases(t *testing.T) {
 	if _, changed, err := InstallHook(root, false, ""); err != nil || !changed {
 		t.Fatalf("settings.json = null: %v %v", changed, err)
 	}
-	// Путь с пробелом экранируется: иначе shell разобьёт его на два слова.
+	// A path with a space is quoted: otherwise the shell would split it into two words.
 	other := t.TempDir()
 	path, _, err := InstallHook(other, false, "/Users/me/My Tools/holdfast")
 	if err != nil {
@@ -544,18 +544,18 @@ func TestInstallEdgeCases(t *testing.T) {
 	}
 	data, _ := os.ReadFile(path)
 	if !strings.Contains(string(data), `'/Users/me/My Tools/holdfast' guard check`) {
-		t.Fatalf("путь не экранирован: %s", data)
+		t.Fatalf("the path is not quoted: %s", data)
 	}
 	if got := shellQuoteArg("it's"); got != `'it'\''s'` {
-		t.Errorf("кавычка: %s", got)
+		t.Errorf("quote: %s", got)
 	}
 	if _, changed, _ := InstallHook(other, false, "/Users/me/My Tools/holdfast"); changed {
-		t.Error("повторная установка с тем же путём не должна ничего менять")
+		t.Error("installing again with the same path must change nothing")
 	}
 }
 
-// Дочерний shell — ( … ), $( … ), <( … ), bash -c, часть конвейера,
-// фоновая команда, env -C — не меняет папку для следующих команд.
+// A child shell (( … ), $( … ), <( … ), bash -c, part of a pipeline,
+// a background command, env -C) does not change the directory for the commands that follow.
 func TestChildShellDoesNotChangeParentContext(t *testing.T) {
 	p := autoPolicy(t, fakeRepo(t, "ref: refs/heads/dev"))
 	children := []string{
@@ -572,22 +572,22 @@ func TestChildShellDoesNotChangeParentContext(t *testing.T) {
 				seps := []string{"; ", " && ", "\n"}
 				switch {
 				case strings.HasSuffix(child, "&"):
-					seps = []string{"\n"} // «cmd &; …» — синтаксическая ошибка
+					seps = []string{"\n"} // "cmd &; …" is a syntax error
 				case strings.HasSuffix(child, "}"):
-					// «f() { … } && x» парсер относит x к определению функции
+					// in "f() { … } && x" the parser attaches x to the function definition
 					seps = []string{"; ", "\n"}
 				}
 				for _, sep := range seps {
 					cmd := child + sep + f
 					if got := p.CheckCommand(cmd); got.Decision != want.Decision || got.Rule != want.Rule {
-						t.Errorf("%q = %s [%s], а без дочернего cd — %s [%s]", cmd, got.Decision, got.Rule, want.Decision, want.Rule)
+						t.Errorf("%q = %s [%s], but without the child cd it is %s [%s]", cmd, got.Decision, got.Rule, want.Decision, want.Rule)
 					}
 				}
 			}
 		}
 	}
-	// Контроль: cd в самом shell меняет папку, дочерний shell её наследует,
-	// а вызов функции с cd делает папку неизвестной.
+	// Control: a cd in the shell itself changes the directory, a child shell
+	// inherits it, and calling a function with a cd makes the directory unknown.
 	for _, cmd := range []string{
 		"cd / && rm -rf projects",
 		"cd / && (rm -rf projects)",
@@ -602,8 +602,8 @@ func TestChildShellDoesNotChangeParentContext(t *testing.T) {
 	}
 }
 
-// pathProject — проект с секретом, запретом на go.sum, защищённой папкой и
-// символическими ссылками на них.
+// pathProject is a project with a secret, a restriction on go.sum, a protected
+// path and symlinks to them.
 func pathProject(t *testing.T) (*Policy, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -629,8 +629,8 @@ func pathProject(t *testing.T) (*Policy, string) {
 	return p, dir
 }
 
-// Запреты путей и секретов применяются к итоговому файлу: glob, {…},
-// символическая ссылка и cp в папку дают то же решение, что прямой путь.
+// Path and secret restrictions apply to the resulting file: a glob, {…},
+// a symlink and cp into a directory get the same decision as the direct path.
 func TestEquivalentPathFormsGetSameDecision(t *testing.T) {
 	p, _ := pathProject(t)
 	groups := []struct {
@@ -664,7 +664,7 @@ func TestEquivalentPathFormsGetSameDecision(t *testing.T) {
 			}
 		}
 	}
-	// Инструменты Read/Edit/Write тоже идут по ссылке.
+	// The Read/Edit/Write tools follow symlinks too.
 	if got := p.CheckFile(OpRead, "alias.txt"); got.Rule != "secret-file" {
 		t.Errorf("Read alias.txt = %s [%s], want secret-file", got.Decision, got.Rule)
 	}
@@ -673,8 +673,8 @@ func TestEquivalentPathFormsGetSameDecision(t *testing.T) {
 	}
 }
 
-// Служебные файлы Holdfast — настройки защиты и точки восстановления —
-// агент не меняет ни правкой, ни командой; читать их можно.
+// Holdfast's service files (the protection settings and the restore points)
+// can't be changed by the agent, neither by an edit nor by a command; reading them is fine.
 func TestServiceFilesAreProtected(t *testing.T) {
 	p, dir := realProject(t)
 	write(t, dir, "holdfast.toml", "[guard]\n")
@@ -732,7 +732,7 @@ func TestServiceFilesAreProtected(t *testing.T) {
 	if got := p.CheckFile(OpRead, "holdfast.toml"); got.Decision != Allow {
 		t.Errorf("Read holdfast.toml = %s, want allow", got.Decision)
 	}
-	// strict: правку решает пользователь.
+	// strict: the user decides on the edit.
 	strict := NewPolicy(dir, dir, &config.GuardConfig{Mode: config.ModeStrict})
 	strict.Home = fakeHome
 	if got := strict.CheckFile(OpWrite, "holdfast.toml"); got.Decision != Ask || got.Rule != "holdfast-config" {
@@ -740,8 +740,8 @@ func TestServiceFilesAreProtected(t *testing.T) {
 	}
 }
 
-// pushRepo — «репозиторий» на ветке dev с ветками main и dev и, по
-// желанию, конфигурацией .git/config.
+// pushRepo is a "repository" on the branch dev with the branches main and dev
+// and, optionally, a .git/config configuration.
 func pushRepo(t *testing.T, gitConfig string, extra map[string]string) *Policy {
 	t.Helper()
 	root := fakeRepo(t, "ref: refs/heads/dev")
@@ -756,12 +756,12 @@ func pushRepo(t *testing.T, gitConfig string, extra map[string]string) *Policy {
 	return autoPolicy(t, root)
 }
 
-// Push в защищённую ветку запрещён, как бы ни было задано назначение;
-// если назначение не определить — отдельный запрет с подсказкой.
+// A push to a protected branch is denied however the destination is given;
+// if the destination can't be determined, a separate denial with a hint applies.
 func TestPushDestinationIsResolved(t *testing.T) {
 	p := pushRepo(t, "", nil)
 	cases := []struct {
-		want  string // правило; "" — разрешено
+		want  string // the rule; "" means allowed
 		forms []string
 	}{
 		{"git-push-protected", []string{
@@ -803,7 +803,7 @@ func TestPushDestinationIsResolved(t *testing.T) {
 		}
 	}
 
-	// То же назначение из файлов конфигурации git, включая include.
+	// The same destination from git configuration files, include among them.
 	for _, tc := range []struct {
 		name, config string
 		extra        map[string]string

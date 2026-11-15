@@ -18,12 +18,12 @@ import (
 	"github.com/roma2246/holdfast/internal/guard"
 )
 
-// check — результат одной проверки doctor.
+// check is the result of one doctor check.
 type check struct {
 	ok     bool
-	title  string // что проверяли
-	detail string // что нашли
-	hint   string // как исправить (только для ✗)
+	title  string // what was checked
+	detail string // what was found
+	hint   string // how to fix it (only for ✗)
 }
 
 func (a *app) doctorCmd() *cobra.Command {
@@ -54,7 +54,7 @@ Exit code: 0 if everything is fine, 2 if there are problems.`,
 	}
 }
 
-// runDoctor выполняет все проверки по порядку.
+// runDoctor runs all the checks in order.
 func runDoctor(root string, now time.Time) []check {
 	gitOK, gitCheck := checkGitInstalled()
 	hooks, hooksCheck := checkHooks(root)
@@ -112,7 +112,7 @@ func checkGitInstalled() (bool, check) {
 	return true, c
 }
 
-// checkHooks ищет оба хука holdfast в настройках Claude Code.
+// checkHooks looks for both holdfast hooks in the Claude Code settings.
 func checkHooks(root string) ([]guard.InstalledHook, check) {
 	c := check{title: "Claude Code hooks"}
 	hooks, err := guard.FindHooks(root)
@@ -144,8 +144,8 @@ func checkHooks(root string) ([]guard.InstalledHook, check) {
 	return hooks, c
 }
 
-// checkBinaries проверяет, что Claude Code найдёт программу из каждого хука.
-// Хуков нет — проверяем holdfast в PATH: его пропишет guard install.
+// checkBinaries verifies that Claude Code will find the program from every hook.
+// With no hooks we check holdfast in PATH: that is what guard install would register.
 func checkBinaries(root string, hooks []guard.InstalledHook) []check {
 	bins := map[string]bool{}
 	for _, h := range hooks {
@@ -169,9 +169,9 @@ func checkBinaries(root string, hooks []guard.InstalledHook) []check {
 	return out
 }
 
-// resolveBin находит программу так же, как shell, в котором Claude Code
-// запускает хук: имя без «/» ищется в PATH, путь — относительно папки
-// проекта (Claude Code запускает хуки из неё).
+// resolveBin finds the program the same way as the shell in which Claude Code
+// runs the hook: a name without "/" is looked up in PATH, a path is taken
+// relative to the project directory (Claude Code runs hooks from there).
 func resolveBin(root, bin string) (string, error) {
 	if !strings.Contains(bin, "/") {
 		path, err := exec.LookPath(bin)
@@ -188,7 +188,7 @@ func resolveBin(root, bin string) (string, error) {
 	switch {
 	case err != nil:
 		return "", fmt.Errorf("%s does not exist", path)
-	case fi.IsDir() || fi.Mode().Perm()&0o111 == 0: // ни одного бита «x»
+	case fi.IsDir() || fi.Mode().Perm()&0o111 == 0: // not a single "x" bit
 		return "", fmt.Errorf("%s is not an executable file", path)
 	}
 	return path, nil
@@ -217,14 +217,14 @@ func checkConfig(root string) check {
 	return c
 }
 
-// recentWindow — какие ошибки в журнале считаются свежими.
+// recentWindow is which errors in the log count as recent.
 const recentWindow = 24 * time.Hour
 
-// checkLog ищет в журнале ошибки, которые ещё не исправлены:
-//   - config-error после последнего изменения holdfast.toml (и не старше
-//     суток): если файл с тех пор правили, ошибка, скорее всего, устранена;
-//   - неудачную последнюю точку восстановления (.holdfast/checkpoint-error
-//     удаляется при первой же удачной точке).
+// checkLog looks in the log for errors that have not been fixed yet:
+//   - a config-error after the last change to holdfast.toml (and no older
+//     than a day): if the file was edited since, the error is most likely gone;
+//   - a failed latest restore point (.holdfast/checkpoint-error is removed
+//     by the very first successful restore point).
 func checkLog(root string, now time.Time) []check {
 	entries, err := guard.ReadLog(root)
 	if err != nil {
@@ -232,8 +232,8 @@ func checkLog(root string, now time.Time) []check {
 			hint: "check the permissions on the .holdfast/ directory"}}
 	}
 	dayAgo := now.Add(-recentWindow)
-	// Ошибка config-error свежая, если она записана позже последней правки
-	// holdfast.toml. Файла нет — конфиг не может не читаться.
+	// A config-error is recent if it was logged after the last edit of
+	// holdfast.toml. With no file, the config can't be unreadable.
 	var cfgChanged time.Time
 	cfgExists := false
 	if fi, err := os.Stat(filepath.Join(root, config.FileName)); err == nil {
@@ -317,7 +317,7 @@ func sortedKeys(m map[string]bool) []string {
 	for k := range m {
 		out = append(out, k)
 	}
-	slices.Sort(out) // сортировка на месте, пакет slices — с Go 1.21
+	slices.Sort(out) // sorts in place; the slices package is available since Go 1.21
 
 	return out
 }

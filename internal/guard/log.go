@@ -10,39 +10,39 @@ import (
 	"time"
 )
 
-// StateDir — папка Holdfast внутри репозитория (журнал и служебные файлы).
+// StateDir is Holdfast's directory inside the repository (the log and service files).
 const StateDir = ".holdfast"
 
-// LogEntry — одна строка журнала .holdfast/log.jsonl.
+// LogEntry is one line of the log .holdfast/log.jsonl.
 type LogEntry struct {
 	Time     time.Time `json:"time"`
 	Session  string    `json:"session,omitempty"`
 	Tool     string    `json:"tool"`
-	Target   string    `json:"target"` // команда или путь к файлу
+	Target   string    `json:"target"` // a command or a file path
 	Decision string    `json:"decision"`
 	Rule     string    `json:"rule,omitempty"`
 	Reason   string    `json:"reason,omitempty"`
-	Context  []string  `json:"context,omitempty"` // источники подсказок, показанных агенту
+	Context  []string  `json:"context,omitempty"` // sources of the hints shown to the agent
 }
 
-// MaxLogSize — размер журнала, после которого он ротируется: текущий файл
-// переименовывается в log.1.jsonl (прежний log.1.jsonl при этом теряется),
-// а новые записи идут в пустой log.jsonl. Так журнал занимает не больше
-// двух таких размеров.
-const MaxLogSize = 5 << 20 // 5 МБ
+// MaxLogSize is the log size at which it is rotated: the current file is
+// renamed to log.1.jsonl (the previous log.1.jsonl is lost in the process),
+// and new entries go to an empty log.jsonl. This way the log takes up at most
+// twice this size.
+const MaxLogSize = 5 << 20 // 5 MB
 
-// LogPath — путь к журналу в репозитории root.
+// LogPath is the path to the log in the repository root.
 func LogPath(root string) string {
 	return filepath.Join(root, StateDir, "log.jsonl")
 }
 
-// OldLogPath — путь к предыдущей части журнала после ротации.
+// OldLogPath is the path to the previous part of the log after rotation.
 func OldLogPath(root string) string {
 	return filepath.Join(root, StateDir, "log.1.jsonl")
 }
 
-// EnsureStateDir создаёт .holdfast/ с .gitignore внутри, чтобы журнал
-// не попадал ни в коммиты, ни в снапшоты.
+// EnsureStateDir creates .holdfast/ with a .gitignore inside, so that the log
+// ends up neither in commits nor in snapshots.
 func EnsureStateDir(root string) error {
 	dir := filepath.Join(root, StateDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -55,8 +55,8 @@ func EnsureStateDir(root string) error {
 	return nil
 }
 
-// AppendLog дописывает запись в журнал. JSONL — «JSON Lines»: один
-// JSON-объект на строку, файл легко дописывать и читать построчно.
+// AppendLog appends an entry to the log. JSONL is "JSON Lines": one JSON
+// object per line, a file that is easy to append to and to read line by line.
 func AppendLog(root string, e LogEntry) error {
 	return appendLog(root, e, MaxLogSize)
 }
@@ -66,8 +66,8 @@ func appendLog(root string, e LogEntry, maxSize int64) error {
 		return err
 	}
 	rotateLog(root, maxSize)
-	// O_APPEND: запись атомарно добавляется в конец, даже если несколько
-	// хуков пишут одновременно (для строк меньше PIPE_BUF).
+	// O_APPEND: the entry is atomically added at the end, even when several
+	// hooks write at the same time (for lines shorter than PIPE_BUF).
 	f, err := os.OpenFile(LogPath(root), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
@@ -84,14 +84,14 @@ func appendLog(root string, e LogEntry, maxSize int64) error {
 	return err
 }
 
-// rotateLog переносит журнал в log.1.jsonl, если он не меньше maxSize.
+// rotateLog moves the log to log.1.jsonl once it is at least maxSize.
 //
-// Хуки могут работать одновременно, поэтому ротацию выполняет только тот,
-// кто создал файл-замок log.lock (O_EXCL — «создать, только если файла
-// ещё нет»; это атомарно). Под замком размер проверяется заново: иначе
-// второй процесс, увидевший большой файл до ротации, переименовал бы уже
-// новый маленький журнал поверх старой части. Ошибки не мешают записи:
-// в худшем случае журнал временно станет больше maxSize.
+// Hooks may run concurrently, so the rotation is done only by whoever created
+// the lock file log.lock (O_EXCL means "create only if the file does not exist
+// yet"; that is atomic). Under the lock the size is checked again: otherwise a
+// second process that saw the big file before the rotation would rename the
+// new small log over the old part. Errors don't get in the way of writing:
+// in the worst case the log temporarily grows beyond maxSize.
 func rotateLog(root string, maxSize int64) {
 	path := LogPath(root)
 	if fi, err := os.Stat(path); err != nil || fi.Size() < maxSize {
@@ -100,8 +100,8 @@ func rotateLog(root string, maxSize int64) {
 	lock := filepath.Join(root, StateDir, "log.lock")
 	f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
-		// Замок старше минуты остался от упавшего процесса: убираем его,
-		// ротация случится при следующей записи.
+		// A lock older than a minute was left by a crashed process: remove it,
+		// the rotation will happen on the next write.
 		if fi, serr := os.Stat(lock); serr == nil && time.Since(fi.ModTime()) > time.Minute {
 			_ = os.Remove(lock)
 		}
@@ -110,15 +110,15 @@ func rotateLog(root string, maxSize int64) {
 	_ = f.Close()
 	defer os.Remove(lock)
 	if fi, err := os.Stat(path); err != nil || fi.Size() < maxSize {
-		return // пока мы ждали, журнал уже ротировал другой процесс
+		return // while we were waiting, another process already rotated the log
 	}
-	// Процесс, который уже открыл старый файл, допишет строку в него, то есть
-	// в log.1.jsonl: дескриптор указывает на файл, а не на имя. Запись не потеряется.
+	// A process that already has the old file open will append its line there,
+	// that is to log.1.jsonl: a descriptor points at the file, not the name. The entry is not lost.
 	_ = os.Rename(path, OldLogPath(root))
 }
 
-// ReadLog читает весь журнал: сначала log.1.jsonl, затем log.jsonl.
-// Повреждённые строки пропускаются.
+// ReadLog reads the whole log: first log.1.jsonl, then log.jsonl.
+// Corrupted lines are skipped.
 func ReadLog(root string) ([]LogEntry, error) {
 	old, err := readLogFile(OldLogPath(root))
 	if err != nil {
@@ -139,7 +139,7 @@ func readLogFile(path string) ([]LogEntry, error) {
 	defer f.Close()
 	var out []LogEntry
 	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 64*1024), 4*1024*1024) // длинные команды
+	sc.Buffer(make([]byte, 64*1024), 4*1024*1024) // long commands
 	for sc.Scan() {
 		var e LogEntry
 		if json.Unmarshal(sc.Bytes(), &e) == nil {

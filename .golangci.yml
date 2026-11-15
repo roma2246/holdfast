@@ -13,9 +13,9 @@ linters:
         - ifElseChain
   exclusions:
     presets:
-      - std-error-handling # defer f.Close(), fmt.Fprint* и т.п.
+      - std-error-handling # defer f.Close(), fmt.Fprint* and the like
     rules:
-      # В тестах подготовка фикстур не обязана проверять каждую ошибку.
+      # In tests, fixture setup does not have to check every error.
       - path: _test\.go
         linters: [errcheck]
 

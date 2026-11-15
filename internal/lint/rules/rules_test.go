@@ -14,10 +14,10 @@ import (
 
 const fixtures = "../../../testdata/lint"
 
-// runFixture прогоняет по папке-фикстуре только правило ruleID
-// (или все правила, если ruleID пустой).
+// runFixture runs only the rule ruleID over a fixture directory
+// (or all rules if ruleID is empty).
 func runFixture(t *testing.T, dir, ruleID string) []lint.Finding {
-	t.Helper() // в сообщении об ошибке будет строка вызывающего теста
+	t.Helper() // the failure message will point at the calling test's line
 	root, err := filepath.Abs(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -28,7 +28,7 @@ func runFixture(t *testing.T, dir, ruleID string) []lint.Finding {
 	}
 	files, err := lint.Discover(root, cfg.Lint.Files)
 	if err != nil || len(files) == 0 {
-		t.Fatalf("нет файлов в %s: %v", dir, err)
+		t.Fatalf("no files in %s: %v", dir, err)
 	}
 	var selected []lint.Rule
 	for _, r := range lint.Rules() {
@@ -43,33 +43,33 @@ func runFixture(t *testing.T, dir, ruleID string) []lint.Finding {
 	return fs
 }
 
-// Для каждого правила: фикстура bad должна срабатывать, good — нет.
+// For every rule: the bad fixture must trigger it, the good one must not.
 func TestRulesFixtures(t *testing.T) {
 	ids := []string{"HF001", "HF002", "HF003", "HF004", "HF005", "HF006", "HF007", "HF008", "HF009"}
 	if got := len(lint.Rules()); got != len(ids) {
-		t.Fatalf("зарегистрировано правил: %d, ожидалось %d", got, len(ids))
+		t.Fatalf("%d rules registered, expected %d", got, len(ids))
 	}
 	for _, id := range ids {
 		t.Run(id+"/bad", func(t *testing.T) {
 			fs := runFixture(t, filepath.Join(fixtures, id, "bad"), id)
 			if len(fs) == 0 {
-				t.Fatalf("%s не сработало на bad-фикстуре", id)
+				t.Fatalf("%s did not fire on the bad fixture", id)
 			}
 			for _, f := range fs {
 				if f.RuleID != id || f.Line < 1 || f.Message == "" || f.Hint == "" {
-					t.Errorf("некорректная находка: %+v", f)
+					t.Errorf("invalid finding: %+v", f)
 				}
 			}
 		})
 		t.Run(id+"/good", func(t *testing.T) {
 			if fs := runFixture(t, filepath.Join(fixtures, id, "good"), id); len(fs) != 0 {
-				t.Fatalf("%s ложно сработало: %+v", id, fs)
+				t.Fatalf("%s fired falsely: %+v", id, fs)
 			}
 		})
 	}
 }
 
-// Точное содержимое находок на нескольких bad-фикстурах.
+// The exact contents of the findings on several bad fixtures.
 func TestRuleDetails(t *testing.T) {
 	tests := []struct {
 		id       string
@@ -89,25 +89,25 @@ func TestRuleDetails(t *testing.T) {
 		t.Run(tt.id, func(t *testing.T) {
 			fs := runFixture(t, filepath.Join(fixtures, tt.id, "bad"), tt.id)
 			if len(fs) != tt.wantN {
-				t.Fatalf("находок %d, ожидалось %d: %+v", len(fs), tt.wantN, fs)
+				t.Fatalf("%d findings, expected %d: %+v", len(fs), tt.wantN, fs)
 			}
 			all := ""
 			for i, f := range fs {
 				all += f.Message + "\n"
 				if f.Line != tt.lines[i] {
-					t.Errorf("находка %d: строка %d, ожидалась %d (%s)", i, f.Line, tt.lines[i], f.Message)
+					t.Errorf("finding %d: line %d, expected %d (%s)", i, f.Line, tt.lines[i], f.Message)
 				}
 			}
 			for _, c := range tt.contains {
 				if !strings.Contains(all, c) {
-					t.Errorf("в сообщениях нет %q:\n%s", c, all)
+					t.Errorf("the messages have no %q:\n%s", c, all)
 				}
 			}
 		})
 	}
 }
 
-// Общая фикстура должна давать все типы проблем сразу.
+// The combined fixture must produce all kinds of problems at once.
 func TestAllRulesOnOneFile(t *testing.T) {
 	fs := runFixture(t, filepath.Join(fixtures, "all"), "")
 	seen := map[string]bool{}
@@ -121,12 +121,12 @@ func TestAllRulesOnOneFile(t *testing.T) {
 	sort.Strings(got)
 	want := "HF001 HF002 HF003 HF004 HF005 HF006 HF007 HF008 HF009"
 	if strings.Join(got, " ") != want {
-		t.Fatalf("сработали %v, ожидались %s", got, want)
+		t.Fatalf("%v fired, expected %s", got, want)
 	}
-	// Вывод отсортирован по файлу и строке.
+	// The output is sorted by file and line.
 	for i := 1; i < len(fs); i++ {
 		if fs[i].Line < fs[i-1].Line {
-			t.Fatalf("находки не отсортированы: %+v", fs)
+			t.Fatalf("the findings are not sorted: %+v", fs)
 		}
 	}
 }
@@ -138,7 +138,7 @@ func TestDisableComment(t *testing.T) {
 	fs := lint.CheckDoc(doc, repo, lint.Rules())
 	for _, f := range fs {
 		if f.RuleID == "HF007" || (f.RuleID == "HF001" && f.Line == 6) {
-			t.Errorf("правило должно быть выключено: %+v", f)
+			t.Errorf("the rule must be disabled: %+v", f)
 		}
 	}
 	found := false
@@ -148,7 +148,7 @@ func TestDisableComment(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("HF001 на строке 7 должно остаться: %+v", fs)
+		t.Errorf("HF001 on line 7 must remain: %+v", fs)
 	}
 }
 
@@ -158,7 +158,7 @@ func TestDisableInConfig(t *testing.T) {
 	doc := lint.Parse("/x/CLAUDE.md", "CLAUDE.md", "# P\n## Commands\n- Write good code.\n")
 	for _, f := range lint.CheckDoc(doc, lint.NewRepo("/x", cfg), lint.Rules()) {
 		if f.RuleID == "HF007" {
-			t.Errorf("HF007 выключено в конфиге: %+v", f)
+			t.Errorf("HF007 is disabled in the config: %+v", f)
 		}
 	}
 }
@@ -181,7 +181,7 @@ func TestJaccard(t *testing.T) {
 }
 
 func TestEstimateTokens(t *testing.T) {
-	if got := rules.EstimateTokens("привет, мир!"); got != 3 { // 12 символов / 4
+	if got := rules.EstimateTokens("привет, мир!"); got != 3 { // 12 characters / 4 (Cyrillic on purpose: runes, not bytes)
 		t.Errorf("EstimateTokens = %d, want 3", got)
 	}
 }
@@ -190,7 +190,7 @@ func TestHF008WithoutHeadings(t *testing.T) {
 	doc := lint.Parse("/x/.cursorrules", ".cursorrules", "Always run `npm test` before finishing.\n")
 	for _, f := range lint.CheckDoc(doc, lint.NewRepo("/x", nil), lint.Rules()) {
 		if f.RuleID == "HF008" {
-			t.Errorf("HF008 не должно срабатывать, есть команда теста: %+v", f)
+			t.Errorf("HF008 must not fire, there is a test command: %+v", f)
 		}
 	}
 }

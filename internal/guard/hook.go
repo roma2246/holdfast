@@ -10,27 +10,27 @@ import (
 	"github.com/roma2246/holdfast/internal/config"
 )
 
-// HookInput — JSON, который Claude Code передаёт PreToolUse-хуку в stdin.
-// Формат: https://code.claude.com/docs/en/hooks
+// HookInput is the JSON that Claude Code passes to a PreToolUse hook on stdin.
+// Format: https://code.claude.com/docs/en/hooks
 type HookInput struct {
 	SessionID     string          `json:"session_id"`
 	Cwd           string          `json:"cwd"`
 	HookEventName string          `json:"hook_event_name"`
 	ToolName      string          `json:"tool_name"`
-	ToolInput     json.RawMessage `json:"tool_input"` // разбираем позже, по ToolName
+	ToolInput     json.RawMessage `json:"tool_input"` // parsed later, depending on ToolName
 }
 
-// toolInput — поля tool_input, которые нас интересуют у разных инструментов.
+// toolInput is the tool_input fields we care about across the different tools.
 type toolInput struct {
 	Command      string `json:"command"`       // Bash
 	FilePath     string `json:"file_path"`     // Read, Edit, Write, MultiEdit
 	NotebookPath string `json:"notebook_path"` // NotebookEdit
 }
 
-// hookOutput — ответ хука. permissionDecision: "deny" | "ask" или пусто
-// (тогда работает обычная проверка разрешений Claude Code).
-// additionalContext — текст, который Claude получит вместе с результатом.
-// omitempty — не выводить поле в JSON, если оно пустое.
+// hookOutput is the hook's reply. permissionDecision is "deny" | "ask" or empty
+// (then Claude Code's regular permission check applies).
+// additionalContext is text that Claude receives together with the result.
+// omitempty leaves a field out of the JSON when it is empty.
 type hookOutput struct {
 	HookSpecificOutput struct {
 		HookEventName            string `json:"hookEventName"`
@@ -40,33 +40,33 @@ type hookOutput struct {
 	} `json:"hookSpecificOutput"`
 }
 
-// HookEnv — внешние зависимости хука; в тестах подменяются.
+// HookEnv is the hook's external dependencies; tests replace them.
 type HookEnv struct {
 	Getenv func(string) string
 	Getwd  func() (string, error)
 	Now    func() time.Time
 }
 
-// DefaultHookEnv — реальное окружение процесса.
+// DefaultHookEnv is the real process environment.
 func DefaultHookEnv() HookEnv {
 	return HookEnv{Getenv: os.Getenv, Getwd: os.Getwd, Now: time.Now}
 }
 
-// RunHook — реализация `holdfast guard check`. Читает JSON из stdin,
-// применяет политику, пишет журнал и ответ. Всегда возвращает 0: хук
-// не должен «падать» и ломать сессию агента.
+// RunHook implements `holdfast guard check`. It reads JSON from stdin, applies
+// the policy, writes the log and the reply. It always returns 0: the hook
+// must not crash and break the agent's session.
 //
-// При «allow» хук не выносит решения: так Claude Code продолжает обычную
-// проверку разрешений, а не одобряет действие молча. Если для затронутых
-// файлов есть правила проекта, хук передаёт их агенту как additionalContext.
+// On "allow" the hook makes no decision: that way Claude Code carries on with
+// its regular permission check instead of silently approving the action. If the
+// touched files have project rules, the hook passes them to the agent as additionalContext.
 func RunHook(stdin io.Reader, stdout io.Writer, env HookEnv) (code int) {
 	var (
 		root  string
 		input HookInput
 		entry LogEntry
 	)
-	// recover() перехватывает panic (аналог необработанного исключения).
-	// Он работает только внутри отложенной (defer) функции.
+	// recover() catches a panic (the analogue of an unhandled exception).
+	// It only works inside a deferred function.
 	defer func() {
 		if r := recover(); r != nil {
 			v := Verdict{Ask, "internal-error", fmt.Sprintf("internal holdfast error (%v); the user needs to review this action", r)}
@@ -101,13 +101,13 @@ func RunHook(stdin io.Reader, stdout io.Writer, env HookEnv) (code int) {
 	return 0
 }
 
-// evaluate — переменная-функция, чтобы тест мог подменить её и проверить
-// восстановление после panic.
+// evaluate is a function variable so that a test can replace it and check
+// recovery after a panic.
 var evaluate = Evaluate
 
-// Evaluate применяет политику к одному вызову инструмента. Возвращает
-// и саму политику (nil для непроверяемых инструментов) — по ней хук
-// узнаёт, какие файлы затронуты.
+// Evaluate applies the policy to one tool call. It also returns the policy
+// itself (nil for tools that are not checked): the hook uses it to learn
+// which files were touched.
 func Evaluate(root string, input HookInput) (Verdict, *Policy) {
 	var ti toolInput
 	if len(input.ToolInput) > 0 {
@@ -115,13 +115,13 @@ func Evaluate(root string, input HookInput) (Verdict, *Policy) {
 			return Verdict{Ask, "bad-input", "could not parse tool_input; the user needs to review this action"}, nil
 		}
 	}
-	// Конфиг читаем лениво: только для инструментов, которые проверяем,
-	// и только секцию [guard].
+	// The config is read lazily: only for the tools we check, and only the
+	// [guard] section.
 	var cfgErr error
 	load := func() *Policy {
 		cfg, err := config.LoadGuard(root)
 		if err != nil {
-			cfg, cfgErr = nil, err // встроенные правила продолжают работать
+			cfg, cfgErr = nil, err // the built-in rules keep working
 		}
 		p := NewPolicy(root, input.Cwd, cfg)
 		p.Session = input.SessionID
@@ -145,10 +145,11 @@ func Evaluate(root string, input HookInput) (Verdict, *Policy) {
 	default:
 		return allowVerdict, nil
 	}
-	// Конфиг есть, но не читается: правила пользователя (защищённые пути,
-	// запреты команд) сейчас не действуют. Молча работать на одних встроенных
-	// правилах нельзя — ошибка настройки не должна ослаблять защиту. Поэтому
-	// всё, что меняет состояние, требует подтверждения, пока конфиг не исправят.
+	// The config exists but can't be read: the user's rules (protected paths,
+	// command restrictions) are not in effect right now. Quietly running on the
+	// built-in rules alone is not acceptable: a configuration mistake must not
+	// weaken the protection. So everything that changes state needs
+	// confirmation until the config is fixed.
 	if cfgErr != nil && input.ToolName != "Read" {
 		v = worst(v, Verdict{Ask, "config-error", fmt.Sprintf(
 			"%s cannot be read (%v): the project rules are not applied. Fix the config; until then the agent's actions need confirmation",
@@ -190,7 +191,7 @@ func finish(w io.Writer, root string, e LogEntry, v Verdict, notes []Note) {
 		e.Context = append(e.Context, n.Source)
 	}
 	if root != "" {
-		_ = AppendLog(root, e) // ошибка журнала не должна влиять на решение
+		_ = AppendLog(root, e) // a log error must not affect the decision
 	}
 	ctx := FormatNotes(notes)
 	if v.Decision != Allow || ctx != "" {

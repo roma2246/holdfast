@@ -1,5 +1,5 @@
-// Package guard — предохранитель для действий агента: политика, хук
-// Claude Code, журнал и снапшоты рабочего дерева.
+// Package guard is a safety catch for agent actions: the policy, the
+// Claude Code hook, the log and working-tree snapshots.
 package guard
 
 import (
@@ -14,8 +14,8 @@ import (
 	"github.com/roma2246/holdfast/internal/config"
 )
 
-// Decision — решение политики. Порядок важен: чем больше, тем строже,
-// поэтому итог по нескольким командам — максимум (см. worst).
+// Decision is a policy decision. The order matters: the larger, the stricter,
+// so the result for several commands is the maximum (see worst).
 type Decision int
 
 const (
@@ -35,16 +35,16 @@ func (d Decision) String() string {
 	}
 }
 
-// Verdict — решение с объяснением.
+// Verdict is a decision with an explanation.
 type Verdict struct {
 	Decision Decision
-	Rule     string // короткий идентификатор правила, например "rm-outside-repo"
-	Reason   string // понятное агенту объяснение
+	Rule     string // short rule identifier, for example "rm-outside-repo"
+	Reason   string // an explanation the agent can understand
 }
 
 var allowVerdict = Verdict{Decision: Allow}
 
-// worst возвращает более строгий из двух вердиктов.
+// worst returns the stricter of two verdicts.
 func worst(a, b Verdict) Verdict {
 	if b.Decision > a.Decision {
 		return b
@@ -52,44 +52,44 @@ func worst(a, b Verdict) Verdict {
 	return a
 }
 
-// Policy применяет правила к командам и файлам.
+// Policy applies the rules to commands and files.
 type Policy struct {
-	Root string // абсолютный корень репозитория
-	Cwd  string // текущая папка агента (для относительных путей)
-	Home string // домашняя папка пользователя
+	Root string // absolute repository root
+	Cwd  string // the agent's current directory (for relative paths)
+	Home string // the user's home directory
 	cfg  *config.GuardConfig
 
-	cwdUnknown bool       // был `cd $VAR` — относительные пути неизвестны
-	dirStack   []dirEntry // стек pushd/popd
+	cwdUnknown bool       // there was a `cd $VAR`, so relative paths are unknown
+	dirStack   []dirEntry // pushd/popd stack
 	dirFuncs   map[string]bool
 
-	// Состояние git, которое меняет сама проверяемая команда: хук видит
-	// файлы до её выполнения, поэтому `git switch main && git push` надо
-	// учитывать по тексту команды.
-	branches         map[string]branchState // репозиторий → ветка после checkout/switch
-	gitConfigChanged bool                   // git config / git remote / запись в .git/config
-	gitEnv           bool                   // GIT_DIR, GIT_CONFIG_* в окружении команды
+	// Git state changed by the command being checked: the hook sees the
+	// files before the command runs, so `git switch main && git push` has
+	// to be worked out from the command text.
+	branches         map[string]branchState // repository → branch after checkout/switch
+	gitConfigChanged bool                   // git config / git remote / a write to .git/config
+	gitEnv           bool                   // GIT_DIR, GIT_CONFIG_* in the command's environment
 
-	realRoot string            // Root после раскрытия символических ссылок
-	dirCache map[string]string // папка → она же без ссылок (на одну проверку)
-	services *serviceSet       // служебные файлы Holdfast
+	realRoot string            // Root with symlinks resolved
+	dirCache map[string]string // directory → the same directory without symlinks (for one check)
+	services *serviceSet       // Holdfast's own service files
 
-	// touched — файлы, которые затрагивает действие (для подсказок агенту).
+	// touched is the files the action affects (for hints to the agent).
 	touched []string
 
-	// tempDirs — временные папки, где удалять можно без вопросов.
+	// tempDirs is the temporary directories where deleting needs no questions.
 	tempDirs []string
 
-	// Session — session_id Claude Code: по нему ищется снимок текущей задачи.
+	// Session is the Claude Code session_id: the current task's snapshot is found by it.
 	Session string
-	// Now — текущее время (в тестах подменяется).
+	// Now is the current time (replaced in tests).
 	Now func() time.Time
 
 	globMu    sync.Mutex
 	globCache map[string]*regexp.Regexp
 }
 
-// NewPolicy создаёт политику. cfg может быть nil — тогда только встроенные правила.
+// NewPolicy creates a policy. cfg may be nil, which leaves only the built-in rules.
 func NewPolicy(root, cwd string, cfg *config.GuardConfig) *Policy {
 	if cfg == nil {
 		cfg = &config.GuardConfig{}
@@ -109,7 +109,7 @@ func NewPolicy(root, cwd string, cfg *config.GuardConfig) *Policy {
 	}
 }
 
-// FileOp — вид файловой операции.
+// FileOp is a kind of file operation.
 type FileOp int
 
 const (
@@ -117,9 +117,9 @@ const (
 	OpWrite
 )
 
-// soft — решение для опасного, но не катастрофического действия.
-// В strict-режиме — спросить человека; в autonomous — запретить и сразу
-// подсказать агенту, как сделать правильно, чтобы он исправился сам.
+// soft is the decision for a dangerous but not catastrophic action.
+// In strict mode it asks the human; in autonomous mode it denies and tells
+// the agent right away how to do it properly, so the agent corrects itself.
 func (p *Policy) soft(rule, reason, hint string) Verdict {
 	if p.cfg.Strict() {
 		return Verdict{Ask, rule, reason + "; user confirmation required"}
@@ -127,11 +127,11 @@ func (p *Policy) soft(rule, reason, hint string) Verdict {
 	return Verdict{Deny, rule, reason + ". " + hint}
 }
 
-// Touched — файлы (абсолютные пути), которые затронуло проверенное действие.
+// Touched returns the files (absolute paths) the checked action affected.
 func (p *Policy) Touched() []string { return p.touched }
 
-// CheckFile проверяет чтение или запись файла инструментами Read/Edit/Write.
-// Правила применяются и к пути, и к файлу, на который он ссылается.
+// CheckFile checks a file read or write made by the Read/Edit/Write tools.
+// The rules apply both to the path and to the file it points to.
 func (p *Policy) CheckFile(op FileOp, path string) Verdict {
 	abs := p.abs(path)
 	p.touched = []string{abs}
@@ -145,7 +145,7 @@ func (p *Policy) CheckFile(op FileOp, path string) Verdict {
 	return v
 }
 
-// abs превращает путь в абсолютный относительно Cwd, раскрывая ~ и $HOME.
+// abs makes the path absolute relative to Cwd, expanding ~ and $HOME.
 func (p *Policy) abs(path string) string {
 	path = p.expandHome(path)
 	if !filepath.IsAbs(path) {
@@ -166,7 +166,7 @@ func (p *Policy) expandHome(path string) string {
 	return path
 }
 
-// inRepo — лежит ли абсолютный путь внутри репозитория.
+// inRepo reports whether an absolute path lies inside the repository.
 func (p *Policy) inRepo(abs string) bool {
 	return isWithin(p.Root, abs)
 }
@@ -176,7 +176,7 @@ func isWithin(dir, path string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// rel — путь относительно корня в формате a/b/c (для glob-шаблонов).
+// rel is the path relative to the root in a/b/c form (for glob patterns).
 func (p *Policy) rel(abs string) string {
 	r, err := filepath.Rel(p.Root, abs)
 	if err != nil {
@@ -185,7 +185,7 @@ func (p *Policy) rel(abs string) string {
 	return filepath.ToSlash(r)
 }
 
-// IsSensitive — файл с секретами: .env, *.pem, приватные SSH-ключи.
+// IsSensitive reports a secrets file: .env, *.pem, private SSH keys.
 func IsSensitive(path string) bool {
 	base := filepath.Base(path)
 	switch base {
@@ -205,22 +205,22 @@ func (p *Policy) checkSensitive(abs string) Verdict {
 		"access to the secrets file (%s) is not allowed. Look up variable names in .env.example or in the code (os.Getenv / process.env); you don't need the values, use environment variables", filepath.Base(abs))}
 }
 
-// isTempPath — путь внутри временной папки (но не она сама). Агенты часто
-// работают во временных папках, удалять там можно без вопросов.
+// isTempPath reports a path inside a temporary directory (but not the
+// directory itself). Agents often work in temp directories, and deleting there needs no questions.
 func (p *Policy) isTempPath(abs string) bool {
 	for _, dir := range p.tempDirs {
 		dir = filepath.Clean(dir)
 		if abs != dir && isWithin(dir, abs) {
-			// Чужой git-репозиторий во временной папке (клон, checkout на CI) —
-			// это чья-то работа, а не черновики: послабление на него не действует.
+			// Someone's git repository in a temp directory (a clone, a CI checkout)
+			// is real work, not scratch files: the exemption does not apply to it.
 			return findGitRoot(abs) == ""
 		}
 	}
 	return false
 }
 
-// checkWritePath — запись/изменение файла: служебные файлы Holdfast,
-// синхронизированные запреты и защищённые папки из конфига.
+// checkWritePath handles writing/changing a file: Holdfast's service files,
+// synced restrictions and protected paths from the config.
 func (p *Policy) checkWritePath(abs string) Verdict {
 	if p.isService(abs) {
 		return p.serviceVerdict(abs)
@@ -234,7 +234,7 @@ func (p *Policy) checkWritePath(abs string) Verdict {
 	return p.pathRules(abs)
 }
 
-// pathRules — правила конфига для файла внутри проекта.
+// pathRules is the config rules for a file inside the project.
 func (p *Policy) pathRules(abs string) Verdict {
 	rel := p.rel(abs)
 	for _, r := range p.cfg.Synced.Rules {
@@ -256,10 +256,10 @@ func (p *Policy) pathRules(abs string) Verdict {
 	return allowVerdict
 }
 
-// match сопоставляет путь (относительно корня) с glob-шаблоном.
-//   - "**" — любое число папок, "*" — любое имя в пределах одной папки;
-//   - шаблон без '*' совпадает с самим путём и со всем, что внутри него;
-//   - шаблон без '/' (например, "*.sql") проверяется и по имени файла.
+// match matches a path (relative to the root) against a glob pattern.
+//   - "**" is any number of directories, "*" is any name within one directory;
+//   - a pattern without '*' matches the path itself and everything inside it;
+//   - a pattern without '/' (for example "*.sql") is also tried against the file name.
 func (p *Policy) match(pattern, rel string) bool {
 	pattern = strings.TrimPrefix(strings.TrimSpace(pattern), "./")
 	if pattern == "" {
@@ -290,7 +290,7 @@ func (p *Policy) globRegexp(pattern string) *regexp.Regexp {
 	return re
 }
 
-// GlobToRegexp переводит glob в регулярное выражение.
+// GlobToRegexp converts a glob into a regular expression.
 func GlobToRegexp(pattern string) string {
 	var b strings.Builder
 	b.WriteString("^")
@@ -301,7 +301,7 @@ func GlobToRegexp(pattern string) string {
 			i++
 			if i+1 < len(pattern) && pattern[i+1] == '/' {
 				i++
-				b.WriteString("(?:.*/)?") // "**/" — ноль или больше папок
+				b.WriteString("(?:.*/)?") // "**/" is zero or more directories
 			} else {
 				b.WriteString(".*")
 			}
@@ -313,7 +313,7 @@ func GlobToRegexp(pattern string) string {
 			b.WriteString(regexp.QuoteMeta(string(c)))
 		}
 	}
-	// "migrations/**" совпадает и с самой папкой "migrations".
+	// "migrations/**" also matches the "migrations" directory itself.
 	s := b.String()
 	if strings.HasSuffix(s, "/.*") {
 		s = strings.TrimSuffix(s, "/.*") + "(?:/.*)?"

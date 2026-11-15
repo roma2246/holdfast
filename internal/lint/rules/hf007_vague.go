@@ -16,7 +16,7 @@ func (vagueRule) Description() string {
 	return "Vague instructions with no specifics"
 }
 
-// Фразы, которые агент и так «знает» и которые ничего не уточняют.
+// Phrases the agent already "knows" and that clarify nothing.
 var vaguePhrases = []string{
 	"write good code", "write clean code", "write quality code", "write high quality code",
 	"write high-quality code", "write readable code", "write better code",

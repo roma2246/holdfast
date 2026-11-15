@@ -10,9 +10,9 @@ permissions:
 
 jobs:
   test:
-    # macOS-раннеры для приватных репозиториев дефицитны (очередь, прерванные
-    # запуски) и расходуют минуты в 10 раз быстрее. Тесты гоняем на Linux,
-    # а сборку под darwin проверяет goreleaser-check.
+    # macOS runners for private repositories are scarce (queues, interrupted
+    # runs) and burn minutes 10 times faster. Tests run on Linux, and the
+    # darwin build is checked by goreleaser-check.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

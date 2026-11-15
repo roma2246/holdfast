@@ -7,18 +7,18 @@ import (
 	"strings"
 )
 
-// branchState — ветка репозитория после checkout/switch внутри команды.
+// branchState is a repository's branch after a checkout/switch inside the command.
 type branchState struct {
-	name    string // "" — detached HEAD
-	unknown bool   // переключились, но куда — не понять (git checkout $X)
+	name    string // "" means detached HEAD
+	unknown bool   // switched, but where to can't be told (git checkout $X)
 }
 
-// anyRepo — ключ p.branches, когда неизвестно, в каком репозитории
-// сменилась ветка (git -C $DIR switch main).
+// anyRepo is the p.branches key used when it is unknown in which repository
+// the branch changed (git -C $DIR switch main).
 const anyRepo = "*"
 
-// branchOf — текущая ветка repo с учётом переключений в этой же команде.
-// known=false — ветку по тексту команды не определить.
+// branchOf is the current branch of repo, taking switches in this same command
+// into account. known=false means the branch can't be told from the command text.
 func (p *Policy) branchOf(repo string) (name string, known bool) {
 	if b, ok := p.branches[anyRepo]; ok && b.unknown {
 		return "", false
@@ -40,9 +40,9 @@ func (p *Policy) setBranch(repo string, w word) {
 	p.branches[repo] = branchState{name: strings.TrimPrefix(w.s, "refs/heads/")}
 }
 
-// trackBranch запоминает смену текущей ветки: git switch X, git checkout -b X,
-// git branch -m X. Хук видит репозиторий до выполнения команды, поэтому в
-// `git switch main && git push` ветку берём из текста команды.
+// trackBranch remembers a change of the current branch: git switch X,
+// git checkout -b X, git branch -m X. The hook sees the repository before the
+// command runs, so in `git switch main && git push` the branch comes from the command text.
 func (p *Policy) trackBranch(g gitCall) {
 	repo := anyRepo
 	if !g.dirUnknown {
@@ -58,7 +58,7 @@ func (p *Policy) trackBranch(g gitCall) {
 	case "branch":
 		if hasArg(args, "-u") || hasArg(args, "--set-upstream-to") || hasArg(args, "--unset-upstream") || hasArg(args, "--track") ||
 			hasPrefixArg(args, "--set-upstream-to=") {
-			p.gitConfigChanged = true // меняется upstream
+			p.gitConfigChanged = true // the upstream changes
 		}
 		if !hasArg(args, "-m") && !hasArg(args, "-M") && !hasArg(args, "--move") {
 			return
@@ -67,14 +67,14 @@ func (p *Policy) trackBranch(g gitCall) {
 		cur, known := p.branchOf(repo)
 		switch {
 		case len(pos) == 1:
-			p.setBranch(repo, pos[0]) // переименовали текущую ветку
+			p.setBranch(repo, pos[0]) // the current branch was renamed
 		case len(pos) == 2 && (!known || pos[0].dynamic || pos[0].s == cur):
 			p.setBranch(repo, pos[1])
 		}
 		return
 	case "checkout":
 		if hasArg(args, "--") && !hasArg(args, "-b") && !hasArg(args, "-B") && !hasArg(args, "--orphan") {
-			return // git checkout [ветка] -- файлы: ветка не меняется
+			return // git checkout [branch] -- files: the branch does not change
 		}
 	}
 
@@ -86,7 +86,7 @@ func (p *Policy) trackBranch(g gitCall) {
 			if i+1 < len(args) {
 				p.setBranch(repo, args[i+1])
 				if i+2 < len(args) && !strings.HasPrefix(args[i+2].s, "-") {
-					p.gitConfigChanged = true // ветка от origin/x получает upstream origin/x
+					p.gitConfigChanged = true // a branch created from origin/x gets origin/x as its upstream
 				}
 			}
 			return
@@ -101,26 +101,26 @@ func (p *Policy) trackBranch(g gitCall) {
 			track = true
 			p.gitConfigChanged = true
 		case a.s == "-":
-			p.setBranch(repo, unknown) // предыдущая ветка
+			p.setBranch(repo, unknown) // the previous branch
 			return
 		case strings.HasPrefix(a.s, "-"):
 		case a.dynamic:
 			p.setBranch(repo, unknown)
 			return
 		case track:
-			// git checkout --track origin/main создаёт ветку main
+			// git checkout --track origin/main creates the branch main
 			_, name, _ := strings.Cut(a.s, "/")
 			p.setBranch(repo, word{s: name})
 			return
 		case g.sub == "switch" || refExists(repo, "refs/heads/"+a.s):
-			// switch принимает только ветки (нет локальной — создаст из origin/<имя>)
+			// switch accepts only branches (if there is no local one, it creates it from origin/<name>)
 			p.setBranch(repo, a)
 			return
 		case g.sub == "checkout" && fileExists(filepath.Join(g.dir, a.s)):
-			return // git checkout файл
+			return // git checkout of a file
 		default:
-			// Тег, коммит или ветка, которой ещё нет (git создаст её из
-			// origin/<имя>): куда переключимся — заранее неизвестно.
+			// A tag, a commit or a branch that does not exist yet (git creates it
+			// from origin/<name>): where we end up is unknown in advance.
 			p.setBranch(repo, unknown)
 			return
 		}
@@ -141,7 +141,7 @@ func hasPrefixArg(args []word, prefix string) bool {
 	return false
 }
 
-// changesGitConfig — git config / git remote, которые меняют настройки.
+// changesGitConfig reports git config / git remote calls that change settings.
 func changesGitConfig(sub string, args []word) bool {
 	pos := nonFlags(args)
 	if sub == "remote" {
@@ -162,18 +162,18 @@ func changesGitConfig(sub string, args []word) bool {
 			return true
 		}
 	}
-	return len(pos) != 1 // git config key — чтение, git config key value — запись
+	return len(pos) != 1 // git config key is a read, git config key value is a write
 }
 
-// pushTarget — куда ведёт один refspec.
+// pushTarget is where one refspec leads.
 type pushTarget struct {
-	branch  string // ветка на сервере
-	tag     bool   // это тег
+	branch  string // the branch on the server
+	tag     bool   // it is a tag
 	force   bool   // +src:dst
-	unclear string // почему назначение не определить
+	unclear string // why the destination can't be determined
 }
 
-// refspecTarget разбирает refspec вида [+]src[:dst].
+// refspecTarget parses a refspec of the form [+]src[:dst].
 func refspecTarget(spec, cur string, curKnown bool, repo string) pushTarget {
 	var t pushTarget
 	if strings.HasPrefix(spec, "+") {
@@ -203,8 +203,8 @@ func refspecTarget(spec, cur string, curKnown bool, repo string) pushTarget {
 	return t
 }
 
-// mapRefspec — куда remote.<имя>.push отправит ветку src:
-// refs/heads/*:refs/heads/team/* и src=feature → team/feature.
+// mapRefspec is where remote.<name>.push sends the branch src:
+// refs/heads/*:refs/heads/team/* and src=feature → team/feature.
 func mapRefspec(spec, src, cur string) (string, bool) {
 	spec = strings.TrimPrefix(spec, "+")
 	from, to, ok := strings.Cut(spec, ":")
@@ -234,14 +234,14 @@ func mapRefspec(spec, src, cur string) (string, bool) {
 	return to, true
 }
 
-// checkPush: force-push, удаление веток и теги запрещены в любом репозитории.
-// Защищённые ветки (main) — настройка проекта: она действует только для
-// репозитория проекта, а не для любого репозитория на диске, где агент
-// выполнил cd. Ветку читаем у того репозитория, где реально идёт push.
+// checkPush: force pushes, branch deletion and tags are denied in any repository.
+// Protected branches (main) are a project setting: it applies only to the
+// project's repository, not to every repository on disk the agent has cd'ed
+// into. The branch is read from the repository the push actually runs in.
 //
-// Назначение без явной ветки берётся из конфигурации git (-c, remote.*.push,
-// push.default, upstream). Если его не определить — отдельный запрет
-// git-push-unclear с подсказкой указать ветку явно.
+// A destination without an explicit branch is taken from the git configuration
+// (-c, remote.*.push, push.default, upstream). If it can't be determined, a
+// separate denial, git-push-unclear, tells the agent to name the branch explicitly.
 func (p *Policy) checkPush(g gitCall) Verdict {
 	args := g.rest
 	withValue := map[string]bool{"-o": true, "--push-option": true, "--receive-pack": true, "--exec": true}
@@ -310,7 +310,7 @@ func (p *Policy) checkPush(g gitCall) Verdict {
 	}
 	repo := findGitRoot(g.dir)
 	if repo == "" {
-		return allowVerdict // не git-репозиторий: git сам сообщит об ошибке
+		return allowVerdict // not a git repository: git will report the error itself
 	}
 	projectRepo := isWithin(p.Root, repo) || isWithin(repo, p.Root)
 
@@ -348,7 +348,7 @@ func (p *Policy) checkPush(g gitCall) Verdict {
 		case p.gitConfigChanged:
 			unclear = "the command itself changes git settings before the push"
 		case len(specs) > 0:
-			// remote.<имя>.push заменяет push.default
+			// remote.<name>.push replaces push.default
 			for _, s := range specs {
 				targets = append(targets, refspecTarget(s, cur, curKnown, repo))
 			}
@@ -366,7 +366,7 @@ func (p *Policy) checkPush(g gitCall) Verdict {
 					for _, m := range conf["branch."+cur+".merge"] {
 						targets = append(targets, pushTarget{branch: strings.TrimPrefix(m, "refs/heads/")})
 					}
-					fallthrough // и проверка текущей ветки, если upstream не задан
+					fallthrough // and check the current branch too, in case no upstream is set
 				default: // simple, current
 					if !curKnown {
 						unclear = "the current branch changes within this same command"
@@ -383,7 +383,7 @@ func (p *Policy) checkPush(g gitCall) Verdict {
 		}
 		targets = append(targets, refspecTarget(r.s, cur, curKnown, repo))
 		if !strings.Contains(r.s, ":") {
-			// git push origin feature с remote.origin.push=feature:main уйдёт в main
+			// git push origin feature with remote.origin.push=feature:main goes to main
 			if p.gitConfigChanged {
 				unclear = "the command itself changes git settings before the push"
 			}
@@ -406,7 +406,7 @@ func (p *Policy) checkPush(g gitCall) Verdict {
 		}
 	}
 	if !projectRepo {
-		return allowVerdict // правила веток проекта к чужим репозиториям не применяем
+		return allowVerdict // the project's branch rules are not applied to other repositories
 	}
 	if unclear != "" {
 		return p.unclearPush(unclear)

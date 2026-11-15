@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0 # GoReleaser строит changelog по истории git
+          fetch-depth: 0 # GoReleaser builds the changelog from the git history
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
@@ -24,6 +24,6 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Токен с правом записи в репозиторий homebrew-tap
-          # (секрет репозитория HOMEBREW). Нет секрета — релиз выйдет без cask.
+          # A token with write access to the homebrew-tap repository
+          # (the repository secret HOMEBREW). Without the secret the release ships without a cask.
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW }}

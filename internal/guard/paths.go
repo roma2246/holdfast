@@ -12,19 +12,19 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
-// Слой «какие файлы на самом деле затрагивает команда». Запреты путей,
-// защищённые папки и секреты применяются к итоговым файлам, а не к тому,
-// как путь написан:
+// The "which files does the command really touch" layer. Path restrictions,
+// protected paths and secrets apply to the resulting files, not to the way
+// the path is spelled:
 //
-//	rm *.sum, cat .en[v], cat .e{n,x}v — раскрываем, как это сделает shell;
-//	cat alias.txt (ссылка на .env)      — идём по символическим ссылкам;
-//	cp go.sum .                         — итоговый путь: ./go.sum.
+//	rm *.sum, cat .en[v], cat .e{n,x}v  are expanded the way the shell would;
+//	cat alias.txt (a symlink to .env)   symlinks are followed;
+//	cp go.sum .                         the resulting path is ./go.sum.
 
-// maxBraceForms — сколько вариантов {a,b}{c,d} раскрываем (дальше — бессмысленно).
+// maxBraceForms is how many {a,b}{c,d} variants we expand (more is pointless).
 const maxBraceForms = 256
 
-// targets — абсолютные пути, которые обозначает слово-аргумент: после
-// раскрытия {…} и glob, плюс файлы, на которые указывают ссылки.
+// targets is the absolute paths a word argument stands for: after {…} and
+// glob expansion, plus the files that symlinks point to.
 func (p *Policy) targets(w word) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -41,8 +41,8 @@ func (p *Policy) targets(w word) []string {
 	return out
 }
 
-// expansions — пути, как их увидит команда после раскрытия {…} и glob
-// (без перехода по ссылкам).
+// expansions is the paths as the command will see them after {…} and glob
+// expansion (without following symlinks).
 func (p *Policy) expansions(w word) []string {
 	glob := hasGlob(w)
 	var out []string
@@ -54,12 +54,12 @@ func (p *Policy) expansions(w word) []string {
 				continue
 			}
 		}
-		out = append(out, abs) // glob без совпадений shell передаёт как есть
+		out = append(out, abs) // the shell passes a glob with no matches through as is
 	}
 	return out
 }
 
-// hasGlob — есть ли в слове *, ? или [ вне кавычек: 'a*' — это просто имя.
+// hasGlob reports whether the word has *, ? or [ outside quotes: 'a*' is just a name.
 func hasGlob(w word) bool {
 	if w.node == nil {
 		return strings.ContainsAny(w.s, "*?[")
@@ -72,16 +72,16 @@ func hasGlob(w word) bool {
 	return false
 }
 
-// braceForms раскрывает {a,b} и {1..3} вне кавычек: .e{n,x}v → .env, .exv.
+// braceForms expands {a,b} and {1..3} outside quotes: .e{n,x}v → .env, .exv.
 func braceForms(w word) []string {
 	if w.node == nil || !strings.Contains(w.s, "{") {
 		return []string{w.s}
 	}
-	// SplitBraces меняет слово, поэтому работаем с копией его частей.
+	// SplitBraces modifies the word, so we work on a copy of its parts.
 	cp := &syntax.Word{}
 	for _, part := range w.node.Parts {
 		if lit, ok := part.(*syntax.Lit); ok {
-			c := *lit // копия структуры, а не указателя
+			c := *lit // a copy of the struct, not of the pointer
 			part = &c
 		}
 		cp.Parts = append(cp.Parts, part)
@@ -90,7 +90,7 @@ func braceForms(w word) []string {
 		return []string{w.s}
 	}
 	var out []string
-	// range по функции-итератору (Go 1.23+): цикл получает пары (слово, ошибка).
+	// range over an iterator function (Go 1.23+): the loop receives (word, error) pairs.
 	for bw, err := range expand.BracesSeq(nil, cp) {
 		if err != nil || len(out) >= maxBraceForms {
 			break
@@ -103,16 +103,16 @@ func braceForms(w word) []string {
 	return out
 }
 
-// shellGlob раскрывает шаблон как bash и zsh по умолчанию: * и ? не
-// совпадают с именами на точку (.env), если точка не написана явно.
-// filepath.Glob этого правила не знает — отфильтровываем сами.
+// shellGlob expands a pattern the way bash and zsh do by default: * and ? do
+// not match dot names (.env) unless the dot is written explicitly.
+// filepath.Glob does not know this rule, so we filter the results ourselves.
 func shellGlob(pattern string) []string {
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return nil
 	}
 	pat := strings.Split(pattern, string(filepath.Separator))
-	out := matches[:0] // фильтр «на месте»: тот же массив, новая длина
+	out := matches[:0] // in-place filter: the same backing array, a new length
 	for _, m := range matches {
 		parts := strings.Split(m, string(filepath.Separator))
 		hidden := false
@@ -129,9 +129,9 @@ func shellGlob(pattern string) []string {
 	return out
 }
 
-// realPath — куда на самом деле ведёт путь после всех символических ссылок.
-// Путь внутри проекта возвращается в «проектном» написании (Root/…), даже
-// если сам Root лежит за ссылкой (/tmp → /private/tmp на macOS).
+// realPath is where a path really leads after all symlinks. A path inside the
+// project is returned in its "project" spelling (Root/…), even if Root
+// itself sits behind a symlink (/tmp → /private/tmp on macOS).
 func (p *Policy) realPath(abs string) string {
 	real := p.resolveLinks(abs)
 	if real == abs {
@@ -150,16 +150,16 @@ func (p *Policy) realPath(abs string) string {
 	return real
 }
 
-// resolveLinks идёт по символическим ссылкам. В отличие от
-// filepath.EvalSymlinks, работает и для «висячей» ссылки на ещё не
-// созданный файл: alias.txt → .env, даже если .env пока нет.
+// resolveLinks follows symlinks. Unlike filepath.EvalSymlinks, it also works
+// for a dangling symlink to a file that does not exist yet:
+// alias.txt → .env, even when .env is not there so far.
 func (p *Policy) resolveLinks(abs string) string {
 	path := abs
-	for range 40 { // как в ядре: не больше 40 переходов, защита от циклов
+	for range 40 { // like the kernel: at most 40 hops, protection against loops
 		path = filepath.Join(p.realDir(filepath.Dir(path)), filepath.Base(path))
 		target, err := os.Readlink(path)
 		if err != nil {
-			return path // не ссылка или файла нет
+			return path // not a symlink, or the file does not exist
 		}
 		if !filepath.IsAbs(target) {
 			target = filepath.Join(filepath.Dir(path), target)
@@ -169,9 +169,9 @@ func (p *Policy) resolveLinks(abs string) string {
 	return path
 }
 
-// realDir — папка после раскрытия ссылок. Аргументы одной команды обычно
-// лежат в одних и тех же папках, поэтому ответ кэшируется: хук должен
-// отвечать за доли миллисекунды.
+// realDir is a directory with symlinks resolved. The arguments of one command
+// usually live in the same directories, so the answer is cached: the hook has
+// to respond within fractions of a millisecond.
 func (p *Policy) realDir(dir string) string {
 	if r, ok := p.dirCache[dir]; ok {
 		return r
@@ -192,9 +192,9 @@ func isDir(path string) bool {
 	return err == nil && fi.IsDir()
 }
 
-// copyTargets — куда запишут cp/mv/ln/install/rsync: место назначения, а
-// если это папка — файлы внутри неё (cp a.txt dir/ → dir/a.txt), включая
-// содержимое копируемых папок. tooMany — файлов больше maxScanFiles.
+// copyTargets is where cp/mv/ln/install/rsync will write: the destination and,
+// if it is a directory, the files inside it (cp a.txt dir/ → dir/a.txt),
+// including the contents of copied directories. tooMany means more files than maxScanFiles.
 func (p *Policy) copyTargets(name string, args []word) (paths []string, tooMany bool) {
 	var dest *word
 	var pos []word
@@ -239,7 +239,7 @@ func (p *Policy) copyTargets(name string, args []word) (paths []string, tooMany 
 		}
 		for _, s := range p.expansions(src) {
 			landing := destAbs
-			// rsync src/ dst и cp -r src/. dst копируют содержимое src, а не саму папку.
+			// rsync src/ dst and cp -r src/. dst copy the contents of src, not the directory itself.
 			contents := (name == "rsync" && strings.HasSuffix(src.s, "/")) || strings.HasSuffix(src.s, "/.")
 			if intoDir && !contents {
 				landing = filepath.Join(destAbs, filepath.Base(s))
@@ -265,19 +265,19 @@ func (p *Policy) copyTargets(name string, args []word) (paths []string, tooMany 
 	return paths, tooMany
 }
 
-// mayHoldRules — может ли в папке оказаться файл под правилами: она внутри
-// проекта или содержит служебные файлы (~/.claude).
+// mayHoldRules reports whether a directory may end up holding a file covered
+// by rules: it is inside the project or contains service files (~/.claude).
 func (p *Policy) mayHoldRules(dir string) bool {
 	return p.inRepo(dir) || p.isService(dir) || p.containsService(dir)
 }
 
-// --- Служебные файлы Holdfast ---
+// --- Holdfast service files ---
 
-// Настройки защиты и точки восстановления — страховка пользователя.
-// Агент не должен менять их ни правкой, ни командой.
+// The protection settings and the restore points are the user's safety net.
+// The agent must not change them, neither by an edit nor by a command.
 type serviceSet struct {
-	files []string // конкретные файлы
-	dirs  []string // папки целиком
+	files []string // specific files
+	dirs  []string // whole directories
 }
 
 var claudeSettings = regexp.MustCompile(`^settings.*\.json$`)
@@ -295,7 +295,7 @@ func (p *Policy) serviceSet() *serviceSet {
 			s.files = append(s.files, filepath.Join(base, ".claude", name))
 		}
 	}
-	// Снимки лежат в общей папке репозитория (для worktree — не в .git проекта).
+	// Snapshots live in the repository's common directory (for a worktree, not in the project's .git).
 	if gd := gitDir(p.Root); gd != "" {
 		cd := commonDir(gd)
 		s.files = append(s.files, filepath.Join(cd, "packed-refs"))
@@ -306,7 +306,7 @@ func (p *Policy) serviceSet() *serviceSet {
 	return s
 }
 
-// isService — путь является служебным файлом Holdfast или лежит в его папке.
+// isService reports whether a path is a Holdfast service file or lies in one of its directories.
 func (p *Policy) isService(abs string) bool {
 	s := p.serviceSet()
 	for _, f := range s.files {
@@ -315,12 +315,12 @@ func (p *Policy) isService(abs string) bool {
 		}
 	}
 	for _, d := range s.dirs {
-		// refs/holdfast-old и т.п. — тоже снимки
+		// refs/holdfast-old and the like are snapshots too
 		if isWithin(d, abs) || strings.HasPrefix(abs, d+"-") {
 			return true
 		}
 	}
-	// .claude/settings*.json проекта и пользователя
+	// .claude/settings*.json of the project and of the user
 	dir := filepath.Dir(abs)
 	if (dir == filepath.Join(p.Root, ".claude") || dir == filepath.Join(p.Home, ".claude")) && claudeSettings.MatchString(filepath.Base(abs)) {
 		return true
@@ -328,8 +328,8 @@ func (p *Policy) isService(abs string) bool {
 	return false
 }
 
-// containsService — внутри папки abs есть служебные файлы (mv .claude x).
-// Сам проект и папки над ним не считаются: для них есть свои правила.
+// containsService reports whether the directory abs has service files inside (mv .claude x).
+// The project itself and the directories above it don't count: they have their own rules.
 func (p *Policy) containsService(abs string) bool {
 	if isWithin(abs, p.Root) {
 		return false
@@ -353,8 +353,8 @@ func (p *Policy) serviceVerdict(abs string) Verdict {
 		"The agent does not change these itself. Describe the edit to the user and let them make it by hand")
 }
 
-// noteGitConfigWrite отмечает запись в файл конфигурации git: после неё
-// назначение git push в этой же команде по файлам уже не определить.
+// noteGitConfigWrite records a write to a git configuration file: after it,
+// the destination of a git push in this same command can no longer be read from files.
 func (p *Policy) noteGitConfigWrite(abs string) {
 	base := filepath.Base(abs)
 	if (base == "config" || base == "config.worktree") && filepath.Base(filepath.Dir(abs)) == ".git" ||

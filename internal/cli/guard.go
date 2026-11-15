@@ -95,7 +95,7 @@ all refs/holdfast*/ refs in every working tree of the repository.`,
 			} else {
 				fmt.Fprintf(a.out, "No holdfast hooks in %s\n", path)
 			}
-			// Хуки могли остаться во втором файле — подскажем, как убрать и их.
+			// Hooks may remain in the second file: tell the user how to remove those too.
 			if hooks, _ := guard.FindHooks(root); len(hooks) > 0 {
 				flag := " --local"
 				if local {
@@ -117,7 +117,7 @@ all refs/holdfast*/ refs in every working tree of the repository.`,
 	return cmd
 }
 
-// purge удаляет журнал и все точки восстановления после подтверждения.
+// purge deletes the log and all restore points after a confirmation.
 func (a *app) purge(root string, yes bool) error {
 	stateDir := filepath.Join(root, guard.StateDir)
 	_, statErr := os.Stat(stateDir)
@@ -179,9 +179,9 @@ func (a *app) guardCheckpointCmd() *cobra.Command {
 		Short: "Save a restore point before a prompt (called by the UserPromptSubmit hook)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// При успехе ничего не печатаем (вывод этого хука попал бы в
-			// контекст агента) и никогда не возвращаем ошибку: она помешала
-			// бы запросу. О неудаче хук сам сообщает пользователю.
+			// On success nothing is printed (this hook's output would end up in
+			// the agent's context) and an error is never returned: it would get
+			// in the way of the prompt. The hook reports a failure to the user itself.
 			guard.RunCheckpoint(a.in, a.out, guard.DefaultHookEnv())
 			return nil
 		},
@@ -213,8 +213,8 @@ automatically before every prompt, and start is only needed for an extra one.`,
 			if err != nil {
 				return err
 			}
-			// .holdfast/.gitignore должен появиться до снапшота, иначе
-			// журнал попадёт в снапшот как неотслеживаемый файл.
+			// .holdfast/.gitignore has to exist before the snapshot, otherwise
+			// the log would get into the snapshot as an untracked file.
 			if err := guard.EnsureStateDir(g.Dir); err != nil {
 				return err
 			}
@@ -229,7 +229,7 @@ automatically before every prompt, and start is only needed for an extra one.`,
 	}
 }
 
-// pickSnapshot: --to N (1 — последняя точка) или --snapshot имя, иначе последняя.
+// pickSnapshot: --to N (1 is the latest restore point) or --snapshot name, otherwise the latest.
 func pickSnapshot(g *guard.Git, name string, to int) (guard.Snapshot, error) {
 	if to > 0 {
 		return g.SnapshotAt(to)
@@ -291,7 +291,7 @@ func (a *app) guardListCmd() *cobra.Command {
 	return cmd
 }
 
-// snapshotLabel — как точка появилась.
+// snapshotLabel is how the restore point came about.
 func snapshotLabel(s guard.Snapshot) string {
 	switch s.Meta.Kind {
 	case guard.KindCheckpoint:
@@ -307,7 +307,7 @@ func snapshotLabel(s guard.Snapshot) string {
 	return "manual"
 }
 
-// humanAgo — «5 мин назад», «3 ч назад», «2 дн назад».
+// humanAgo gives "5 min ago", "3 h ago", "2 days ago".
 func humanAgo(d time.Duration) string {
 	switch {
 	case d < time.Minute:
@@ -380,8 +380,8 @@ rollback, so the rollback itself can be undone.`,
 			if err != nil {
 				return err
 			}
-			// План строится до любых изменений: всё, что откат перезапишет или
-			// удалит, должно попасть в резервную копию — иначе откат не начнётся.
+			// The plan is built before any changes: everything the rollback would
+			// overwrite or delete has to be in the backup, otherwise the rollback won't start.
 			plan, err := g.PlanRollback(snap)
 			if err != nil {
 				return err
@@ -459,7 +459,7 @@ func (a *app) guardLogCmd() *cobra.Command {
 				}
 			}
 			if limit > 0 && len(filtered) > limit {
-				filtered = filtered[len(filtered)-limit:] // последние limit записей
+				filtered = filtered[len(filtered)-limit:] // the last limit entries
 			}
 			if asJSON {
 				enc := json.NewEncoder(a.out)
@@ -517,21 +517,21 @@ func (a *app) printLogTable(root string, entries []guard.LogEntry) {
 	fmt.Fprintln(a.out, t.Render())
 }
 
-// logColumnWidths делит ширину терминала между колонками «действие» и
-// «причина»; остальные колонки узкие и фиксированные. Без терминала
-// (вывод в файл или pipe) ширина не ограничена разумными значениями.
+// logColumnWidths splits the terminal width between the "action" and "reason"
+// columns; the other columns are narrow and fixed. Without a terminal (output
+// to a file or a pipe) the width is capped at reasonable values.
 func logColumnWidths(termWidth int) (target, why int) {
 	if termWidth <= 0 {
 		return 48, 60
 	}
-	// время 14 + решение 7 + инструмент 12 + отступы 5×2 + рамки 6
+	// time 14 + decision 7 + tool 12 + padding 5×2 + borders 6
 	const fixed = 14 + 7 + 12 + 5*2 + 6
 	rest := max(termWidth-fixed-1, 24)
 	target = rest * 2 / 5
 	return target, rest - target
 }
 
-// terminalWidth — ширина терминала, 0 — если w не терминал.
+// terminalWidth is the width of the terminal, 0 if w is not a terminal.
 func terminalWidth(w io.Writer) int {
 	f, ok := w.(*os.File)
 	if !ok || !isatty.IsTerminal(f.Fd()) {
@@ -544,7 +544,7 @@ func terminalWidth(w io.Writer) int {
 	return width
 }
 
-// relTarget показывает путь внутри проекта относительно его корня.
+// relTarget shows a path inside the project relative to its root.
 func relTarget(root, target string) string {
 	if !filepath.IsAbs(target) {
 		return target
@@ -555,7 +555,7 @@ func relTarget(root, target string) string {
 	return target
 }
 
-// truncate обрезает строку по символам (не байтам) и убирает переводы строк.
+// truncate cuts a string by characters (not bytes) and removes line breaks.
 func truncate(s string, n int) string {
 	s = strings.ReplaceAll(s, "\n", " ⏎ ")
 	r := []rune(s)

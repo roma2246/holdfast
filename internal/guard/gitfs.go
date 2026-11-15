@@ -7,12 +7,13 @@ import (
 	"strings"
 )
 
-// Хук должен отвечать за миллисекунды, а запуск `git` занимает 5–20 мс.
-// Поэтому нужные хуку факты (текущая ветка, есть ли снапшот, есть ли тег)
-// читаем прямо из файлов в .git — это доли миллисекунды.
+// The hook has to answer within milliseconds, and starting `git` takes 5–20 ms.
+// So the facts the hook needs (the current branch, whether a snapshot exists,
+// whether a tag exists) are read straight from the files in .git, which takes
+// fractions of a millisecond.
 
-// gitDir возвращает папку .git репозитория root. В worktree и сабмодулях
-// .git — это файл со строкой "gitdir: <путь>".
+// gitDir returns the .git directory of the repository root. In worktrees and
+// submodules .git is a file with the line "gitdir: <path>".
 func gitDir(root string) string {
 	p := filepath.Join(root, ".git")
 	info, err := os.Stat(p)
@@ -33,8 +34,8 @@ func gitDir(root string) string {
 	return dir
 }
 
-// findGitRoot поднимается от dir вверх до папки, где есть .git.
-// "" — dir не внутри git-репозитория.
+// findGitRoot walks up from dir to a directory that has .git.
+// "" means dir is not inside a git repository.
 func findGitRoot(dir string) string {
 	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
 		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
@@ -46,7 +47,7 @@ func findGitRoot(dir string) string {
 	}
 }
 
-// commonDir — общая папка репозитория (для worktree refs лежат там).
+// commonDir is the repository's common directory (for a worktree the refs live there).
 func commonDir(gd string) string {
 	data, err := os.ReadFile(filepath.Join(gd, "commondir"))
 	if err != nil {
@@ -59,7 +60,7 @@ func commonDir(gd string) string {
 	return filepath.Clean(dir)
 }
 
-// currentBranch — имя текущей ветки; "" — detached HEAD или не git.
+// currentBranch is the name of the current branch; "" means detached HEAD or not git.
 func currentBranch(root string) string {
 	gd := gitDir(root)
 	if gd == "" {
@@ -76,7 +77,7 @@ func currentBranch(root string) string {
 	return strings.TrimPrefix(head, "ref: refs/heads/")
 }
 
-// refExists ищет ссылку и в виде файла, и в packed-refs.
+// refExists looks for a ref both as a file and in packed-refs.
 func refExists(root, ref string) bool {
 	gd := gitDir(root)
 	if gd == "" {
@@ -97,7 +98,7 @@ func packedRefsHas(commonDir string, match func(string) bool) bool {
 	defer f.Close()
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
-		// Формат строки: "<sha> <refname>".
+		// Line format: "<sha> <refname>".
 		if _, name, ok := strings.Cut(sc.Text(), " "); ok && match(name) {
 			return true
 		}

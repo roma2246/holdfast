@@ -34,14 +34,14 @@ func TestParseHoldfastHook(t *testing.T) {
 		{"'/opt/my tools/holdfast' guard checkpoint", "/opt/my tools/holdfast", "checkpoint", true},
 		{"holdfast-dev guard check", "holdfast-dev", "check", true},
 		{"other-hook", "", "", false},
-		{"other guard check", "", "", false},        // чужая программа
-		{"holdfast guard list", "", "", false},      // не хук
-		{"holdfast guard check --x", "", "", false}, // не наш формат
+		{"other guard check", "", "", false},        // someone else's program
+		{"holdfast guard list", "", "", false},      // not a hook
+		{"holdfast guard check --x", "", "", false}, // not our format
 		{"$HF guard check", "", "", false},
 		{"X=1 holdfast guard check", "", "", false},
 		{"holdfast guard check > /tmp/log", "", "", false},
 		{"holdfast guard check; rm -rf /", "", "", false},
-		{"holdfast 'guard", "", "", false}, // не разбирается
+		{"holdfast 'guard", "", "", false}, // does not parse
 		{"(holdfast guard check)", "", "", false},
 	}
 	for _, tt := range tests {
@@ -73,19 +73,19 @@ func TestUninstallHookRestoresSettings(t *testing.T) {
 	if err != nil || removed != 2 {
 		t.Fatalf("removed=%d err=%v", removed, err)
 	}
-	// install + uninstall = исходные настройки (с точностью до форматирования).
+	// install + uninstall = the original settings (up to formatting).
 	if got := readJSON(t, path); !reflect.DeepEqual(got, want) {
-		t.Fatalf("настройки изменились:\n got %v\nwant %v", got, want)
+		t.Fatalf("the settings changed:\n got %v\nwant %v", got, want)
 	}
-	// Повторный uninstall ничего не меняет.
+	// A second uninstall changes nothing.
 	if _, removed, err := UninstallHook(root, false); err != nil || removed != 0 {
-		t.Fatalf("повторно: %d %v", removed, err)
+		t.Fatalf("second time: %d %v", removed, err)
 	}
 }
 
 func TestUninstallHookMixedGroupAndEmpty(t *testing.T) {
 	root := t.TempDir()
-	// Наш хук в одной группе с чужим: чужой остаётся, группа сохраняется.
+	// Our hook in one group with a foreign one: the foreign one stays, the group is kept.
 	write(t, root, ".claude/settings.local.json", `{"hooks":{
   "PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"holdfast guard check"},{"type":"command","command":"lint-hook"}]}, "junk"],
   "UserPromptSubmit":[{"hooks":[{"type":"command","command":"holdfast guard checkpoint"}]}],
@@ -98,17 +98,17 @@ func TestUninstallHookMixedGroupAndEmpty(t *testing.T) {
 	got := readJSON(t, path)
 	hooks := got["hooks"].(map[string]any)
 	if _, ok := hooks["UserPromptSubmit"]; ok {
-		t.Fatalf("пустое событие не удалено: %v", hooks)
+		t.Fatalf("the empty event was not removed: %v", hooks)
 	}
 	pre := hooks["PreToolUse"].([]any)
 	if len(pre) != 2 || !strings.Contains(mustJSON(pre), "lint-hook") || strings.Contains(mustJSON(pre), "holdfast") {
 		t.Fatalf("PreToolUse: %v", pre)
 	}
 	if hooks["Weird"] != "not-a-list" {
-		t.Fatalf("чужой ключ изменён: %v", hooks)
+		t.Fatalf("a foreign key was changed: %v", hooks)
 	}
 
-	// Только хуки holdfast: ключ "hooks" исчезает целиком.
+	// Only holdfast hooks: the "hooks" key disappears entirely.
 	write(t, root, ".claude/settings.json", `{"model":"opus","hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"holdfast guard check"}]}]}}`)
 	path, _, err = UninstallHook(root, false)
 	if err != nil {
@@ -118,18 +118,18 @@ func TestUninstallHookMixedGroupAndEmpty(t *testing.T) {
 		t.Fatalf("%v", got)
 	}
 
-	// Файла нет — ничего не делаем и не создаём.
+	// No file: do nothing and create nothing.
 	empty := t.TempDir()
 	if _, removed, err := UninstallHook(empty, false); err != nil || removed != 0 {
 		t.Fatalf("%d %v", removed, err)
 	}
 	if _, err := os.Stat(filepath.Join(empty, ".claude")); err == nil {
-		t.Fatal("uninstall создал .claude/")
+		t.Fatal("uninstall created .claude/")
 	}
-	// Битый JSON — ошибка, файл не трогаем.
+	// Broken JSON: an error, and the file is left alone.
 	write(t, empty, ".claude/settings.json", "{oops")
 	if _, _, err := UninstallHook(empty, false); err == nil {
-		t.Fatal("ожидалась ошибка JSON")
+		t.Fatal("expected a JSON error")
 	}
 }
 
@@ -143,7 +143,7 @@ func TestFindHooks(t *testing.T) {
 	if hooks, err := FindHooks(root); err != nil || len(hooks) != 0 {
 		t.Fatalf("%v %v", hooks, err)
 	}
-	// Подкоманда должна соответствовать событию: checkpoint в PreToolUse не считается.
+	// The subcommand has to match the event: checkpoint under PreToolUse does not count.
 	write(t, root, ".claude/settings.json", `{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"holdfast guard checkpoint"}]}]}}`)
 	if hooks, err := FindHooks(root); err != nil || len(hooks) != 0 {
 		t.Fatalf("%v %v", hooks, err)
@@ -162,7 +162,7 @@ func TestFindHooks(t *testing.T) {
 	}
 	write(t, root, ".claude/settings.json", "[1,2]")
 	if hooks, err := FindHooks(root); err == nil || len(hooks) != 2 {
-		t.Fatalf("битый settings.json: %v %v", hooks, err)
+		t.Fatalf("broken settings.json: %v %v", hooks, err)
 	}
 }
 
@@ -171,42 +171,42 @@ func TestLogRotation(t *testing.T) {
 	entry := func(i int) LogEntry {
 		return LogEntry{Time: time.Unix(int64(i), 0).UTC(), Tool: "Bash", Target: strings.Repeat("x", 40), Decision: "allow", Rule: string(rune('a' + i))}
 	}
-	// Порог 100 байт: каждая запись ~120 байт, ротация перед каждой второй записью.
+	// A 100-byte threshold: each entry is ~120 bytes, so rotation happens before every second write.
 	for i := range 3 {
 		if err := appendLog(root, entry(i), 100); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// После трёх записей: log.1 = запись 1 (запись 0 ушла при второй ротации), log = запись 2.
+	// After three writes: log.1 = entry 1 (entry 0 was lost at the second rotation), log = entry 2.
 	got, err := ReadLog(root)
 	if err != nil || len(got) != 2 || got[0].Rule != "b" || got[1].Rule != "c" {
 		t.Fatalf("%+v %v", got, err)
 	}
 	if _, err := os.Stat(filepath.Join(root, StateDir, "log.lock")); err == nil {
-		t.Fatal("замок не удалён")
+		t.Fatal("the lock was not removed")
 	}
 
-	// Свежий замок (ротирует другой процесс) — ротации нет, запись есть.
+	// A fresh lock (another process is rotating): no rotation, but the entry is written.
 	lock := filepath.Join(root, StateDir, "log.lock")
 	write(t, root, filepath.Join(StateDir, "log.lock"), "")
 	if err := appendLog(root, entry(3), 100); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := ReadLog(root); len(got) != 3 {
-		t.Fatalf("при чужом замке запись потеряна: %+v", got)
+		t.Fatalf("the entry was lost under a foreign lock: %+v", got)
 	}
 	if _, err := os.Stat(lock); err != nil {
-		t.Fatal("чужой свежий замок удалён")
+		t.Fatal("a foreign fresh lock was removed")
 	}
-	// Замок старше минуты — остался от упавшего процесса: его убирают,
-	// а следующая запись ротирует журнал.
+	// A lock older than a minute was left by a crashed process: it is removed,
+	// and the next write rotates the log.
 	old := time.Now().Add(-2 * time.Minute)
 	if err := os.Chtimes(lock, old, old); err != nil {
 		t.Fatal(err)
 	}
 	_ = appendLog(root, entry(4), 100)
 	if _, err := os.Stat(lock); err == nil {
-		t.Fatal("старый замок не удалён")
+		t.Fatal("the old lock was not removed")
 	}
 	_ = appendLog(root, entry(5), 100)
 	got, _ = ReadLog(root)
@@ -214,7 +214,7 @@ func TestLogRotation(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 
-	// Большой порог: обычная запись не ротирует.
+	// A large threshold: a regular write does not rotate.
 	if err := AppendLog(root, entry(6)); err != nil {
 		t.Fatal(err)
 	}
@@ -225,12 +225,12 @@ func TestLogRotation(t *testing.T) {
 
 func TestReadLogOldPartUnreadable(t *testing.T) {
 	root := t.TempDir()
-	// log.1.jsonl — папка: ошибка чтения, а не тихая потеря части журнала.
+	// log.1.jsonl is a directory: a read error, not a silent loss of part of the log.
 	if err := os.MkdirAll(OldLogPath(root), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ReadLog(root); err == nil {
-		t.Fatal("ожидалась ошибка")
+		t.Fatal("expected an error")
 	}
 }
 
@@ -265,9 +265,9 @@ func TestPurgeRefs(t *testing.T) {
 		t.Fatalf("%d %v", n, err)
 	}
 	if refs, _ := g.AllRefs(); len(refs) != 0 {
-		t.Fatalf("остались %v", refs)
+		t.Fatalf("%v remain", refs)
 	}
 	if out := git(t, dir, "show-ref", "refs/heads/keep"); out == "" {
-		t.Fatal("удалена чужая ветка")
+		t.Fatal("a foreign branch was deleted")
 	}
 }

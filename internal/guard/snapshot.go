@@ -16,47 +16,47 @@ import (
 	"time"
 )
 
-// Пространства имён git-ссылок. Ссылки в refs/holdfast/ не видны как
-// ветки и не попадают в `git stash list`, поэтому не мешают пользователю.
+// Git ref namespaces. Refs under refs/holdfast/ do not show up as branches
+// and do not appear in `git stash list`, so they stay out of the user's way.
 //
-// Ссылки общие для всех рабочих деревьев (git worktree) репозитория, поэтому
-// снимки каждого дерева лежат в своей подпапке: refs/holdfast/main/… для
-// основного и refs/holdfast/wt-<имя>/… для остальных. Иначе откат в одном
-// дереве мог бы взять снимок другого.
+// Refs are shared by all working trees (git worktree) of a repository, so the
+// snapshots of each tree live in their own subdirectory: refs/holdfast/main/…
+// for the main one and refs/holdfast/wt-<name>/… for the others. Otherwise a
+// rollback in one tree could pick up a snapshot of another.
 const (
 	SnapshotRefPrefix = "refs/holdfast/"
 	BackupRefPrefix   = "refs/holdfast-backup/"
 )
 
-// KeepBackups — сколько резервных копий «перед откатом» хранить.
+// KeepBackups is how many "before rollback" backups to keep.
 const KeepBackups = 20
 
-// ErrNoSnapshot — снапшотов ещё нет.
+// ErrNoSnapshot means there are no snapshots yet.
 var ErrNoSnapshot = errors.New("no snapshot found: run holdfast guard start first")
 
-// Snapshot — сохранённое состояние рабочего дерева.
+// Snapshot is a saved state of the working tree.
 type Snapshot struct {
 	Ref    string // refs/holdfast/main/20261113-204901-123456789
 	Commit string
-	Tree   string // хэш дерева: одинаковый у снимков одинакового состояния
+	Tree   string // tree hash: identical for snapshots of identical states
 	Time   time.Time
 	Meta   SnapshotMeta
 }
 
-// Виды снимков.
+// Snapshot kinds.
 const (
 	KindManual     = "manual"     // holdfast guard start
-	KindCheckpoint = "checkpoint" // автоматически перед запросом к агенту
-	KindPreDelete  = "pre-delete" // автоматически перед массовым удалением
-	KindBackup     = "backup"     // состояние перед откатом
+	KindCheckpoint = "checkpoint" // automatic, before a prompt to the agent
+	KindPreDelete  = "pre-delete" // automatic, before a mass deletion
+	KindBackup     = "backup"     // the state before a rollback
 )
 
-// SnapshotMeta хранится в сообщении служебного коммита снимка.
+// SnapshotMeta is stored in the message of the snapshot's service commit.
 type SnapshotMeta struct {
 	Kind     string
-	Session  string // session_id Claude Code
-	Prompt   string // начало запроса пользователя или описание действия
-	Worktree string // корень рабочего дерева, в котором сделан снимок
+	Session  string // Claude Code session_id
+	Prompt   string // the beginning of the user's prompt or a description of the action
+	Worktree string // root of the working tree the snapshot was taken in
 }
 
 func (m SnapshotMeta) message(now time.Time) string {
@@ -97,12 +97,12 @@ func parseMeta(body string) SnapshotMeta {
 		}
 	}
 	if m.Kind == "" {
-		m.Kind = KindManual // снимки старых версий
+		m.Kind = KindManual // snapshots from older versions
 	}
 	return m
 }
 
-// oneLine сжимает текст в одну строку не длиннее n символов.
+// oneLine squeezes text into a single line of at most n characters.
 func oneLine(s string, n int) string {
 	s = strings.Join(strings.Fields(s), " ")
 	if r := []rune(s); len(r) > n {
@@ -111,17 +111,17 @@ func oneLine(s string, n int) string {
 	return s
 }
 
-// Name — короткое имя снимка: последняя часть ссылки.
+// Name is the snapshot's short name: the last component of the ref.
 func (s Snapshot) Name() string {
 	return s.Ref[strings.LastIndex(s.Ref, "/")+1:]
 }
 
-// Git — тонкая обёртка над командой git (через os/exec).
+// Git is a thin wrapper around the git command (through os/exec).
 type Git struct {
-	Dir string // корень рабочего дерева
+	Dir string // root of the working tree
 }
 
-// OpenGit находит корень git-репозитория, содержащего dir.
+// OpenGit finds the root of the git repository that contains dir.
 func OpenGit(dir string) (*Git, error) {
 	out, err := (&Git{Dir: dir}).run(nil, nil, "rev-parse", "--show-toplevel")
 	if err != nil {
@@ -132,8 +132,8 @@ func OpenGit(dir string) (*Git, error) {
 
 var unsafeRefRe = regexp.MustCompile(`[^A-Za-z0-9_-]`)
 
-// worktreeID — "main" для основного рабочего дерева и "wt-<имя>" для
-// добавленного через `git worktree add` (имя — как его называет сам git).
+// worktreeID is "main" for the main working tree and "wt-<name>" for one
+// added with `git worktree add` (the name is whatever git itself calls it).
 func (g *Git) worktreeID() string {
 	gd := gitDir(g.Dir)
 	if gd == "" || filepath.Clean(commonDir(gd)) == filepath.Clean(gd) {
@@ -145,13 +145,13 @@ func (g *Git) worktreeID() string {
 func (g *Git) snapPrefix() string   { return SnapshotRefPrefix + g.worktreeID() + "/" }
 func (g *Git) backupPrefix() string { return BackupRefPrefix + g.worktreeID() + "/" }
 
-// run выполняет git с дополнительными переменными окружения и stdin.
+// run executes git with extra environment variables and stdin.
 func (g *Git) run(env []string, stdin io.Reader, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = g.Dir
 	cmd.Stdin = stdin
-	// Снапшоты — служебные коммиты, автора задаём явно: так они работают
-	// даже без настроенного user.name/user.email.
+	// Snapshots are service commits, so the author is set explicitly: that way
+	// they work even without user.name/user.email configured.
 	cmd.Env = append(os.Environ(),
 		"GIT_AUTHOR_NAME=holdfast", "GIT_AUTHOR_EMAIL=holdfast@localhost",
 		"GIT_COMMITTER_NAME=holdfast", "GIT_COMMITTER_EMAIL=holdfast@localhost",
@@ -165,8 +165,8 @@ func (g *Git) run(env []string, stdin io.Reader, args ...string) (string, error)
 	return stdout.String(), nil
 }
 
-// withTempIndex вызывает fn с переменной GIT_INDEX_FILE, указывающей на
-// временный индекс. Настоящий индекс пользователя (staged-изменения) не трогается.
+// withTempIndex calls fn with GIT_INDEX_FILE pointing at a temporary index.
+// The user's real index (staged changes) is left untouched.
 func (g *Git) withTempIndex(fn func(env []string) error) error {
 	f, err := os.CreateTemp("", "holdfast-index-*")
 	if err != nil {
@@ -174,7 +174,7 @@ func (g *Git) withTempIndex(fn func(env []string) error) error {
 	}
 	name := f.Name()
 	f.Close()
-	os.Remove(name) // git нужен несуществующий файл или валидный индекс
+	os.Remove(name) // git needs either a missing file or a valid index
 	defer os.Remove(name)
 	return fn([]string{"GIT_INDEX_FILE=" + name})
 }
@@ -187,15 +187,15 @@ func (g *Git) head() (string, bool) {
 	return strings.TrimSpace(out), true
 }
 
-// WriteTree сохраняет текущее рабочее дерево (включая неотслеживаемые
-// файлы, кроме игнорируемых .gitignore) как git-дерево и возвращает его хэш.
+// WriteTree saves the current working tree (including untracked files,
+// except those ignored by .gitignore) as a git tree and returns its hash.
 //
-// Почему не `git stash create`: он не включает неотслеживаемые файлы.
-// Временный индекс + `git add -A` + `git write-tree` делает то же, что
-// stash, но с новыми файлами и без изменения stash, веток и индекса.
+// Why not `git stash create`: it leaves out untracked files.
+// A temporary index + `git add -A` + `git write-tree` does what stash does,
+// but with new files included and without touching the stash, branches or the index.
 func (g *Git) WriteTree() (string, error) {
-	// Быстрый путь: постоянный служебный индекс. Если он недоступен (нет
-	// коммитов, параллельный запуск держит блокировку) — честный медленный.
+	// Fast path: a persistent service index. If it is unavailable (no
+	// commits, a parallel run holds the lock), take the honest slow path.
 	if tree, err := g.writeTreeCached(); err == nil {
 		return tree, nil
 	}
@@ -207,8 +207,8 @@ func (g *Git) WriteTree() (string, error) {
 	return tree, err
 }
 
-// writeTreeFresh строит дерево с нуля во временном индексе: git заново
-// читает и хэширует каждый файл проекта.
+// writeTreeFresh builds the tree from scratch in a temporary index: git
+// re-reads and re-hashes every file of the project.
 func (g *Git) writeTreeFresh() (string, error) {
 	var tree string
 	err := g.withTempIndex(func(env []string) error {
@@ -227,11 +227,11 @@ func (g *Git) writeTreeFresh() (string, error) {
 	return tree, err
 }
 
-// writeTreeCached даёт тот же результат, но хранит служебный индекс в
-// .git/holdfast/index между запусками. В индексе git запоминает размер и
-// время изменения каждого файла, поэтому перечитывает только изменившиеся —
-// на больших проектах это в разы быстрее. `read-tree -m HEAD` возвращает
-// индекс к состоянию HEAD, сохраняя эти отметки у нетронутых файлов.
+// writeTreeCached gives the same result but keeps the service index in
+// .git/holdfast/index between runs. In the index git remembers the size and
+// modification time of every file, so it re-reads only the changed ones, which
+// is several times faster on large projects. `read-tree -m HEAD` resets the
+// index to the state of HEAD while keeping those stamps for untouched files.
 func (g *Git) writeTreeCached() (string, error) {
 	gd := gitDir(g.Dir)
 	if _, ok := g.head(); gd == "" || !ok {
@@ -251,7 +251,7 @@ func (g *Git) writeTreeCached() (string, error) {
 	return strings.TrimSpace(out), err
 }
 
-// CreateSnapshot сохраняет текущее рабочее дерево как снимок.
+// CreateSnapshot saves the current working tree as a snapshot.
 func (g *Git) CreateSnapshot(now time.Time, meta SnapshotMeta) (Snapshot, error) {
 	tree, err := g.WriteTree()
 	if err != nil {
@@ -275,9 +275,9 @@ func (g *Git) snapshotFromTree(prefix string, now time.Time, tree string, meta S
 	}
 	commit := strings.TrimSpace(out)
 
-	// Имя — время с наносекундами фиксированной ширины: порядок имён совпадает
-	// с порядком создания. Пустое «старое значение» у update-ref означает
-	// «ссылки ещё нет»: создание атомарно, при совпадении имён берём следующее.
+	// The name is the time with fixed-width nanoseconds: name order matches
+	// creation order. An empty "old value" for update-ref means "the ref does
+	// not exist yet": creation is atomic, and on a name clash we take the next one.
 	t := now.UTC()
 	for attempt := 0; ; attempt++ {
 		ref := prefix + t.Format("20060102-150405") + fmt.Sprintf("-%09d", t.Nanosecond())
@@ -292,9 +292,9 @@ func (g *Git) snapshotFromTree(prefix string, now time.Time, tree string, meta S
 	}
 }
 
-// Checkpoint — автоматическая точка восстановления. Если рабочее дерево не
-// изменилось с последнего снимка, новый не создаётся: возвращается последний
-// (created=false). Старые снимки сверх keep удаляются.
+// Checkpoint is an automatic restore point. If the working tree has not
+// changed since the last snapshot, no new one is created: the last one is
+// returned (created=false). Old snapshots beyond keep are deleted.
 func (g *Git) Checkpoint(now time.Time, meta SnapshotMeta, keep int) (snap Snapshot, created bool, err error) {
 	tree, err := g.WriteTree()
 	if err != nil {
@@ -314,8 +314,8 @@ func (g *Git) Checkpoint(now time.Time, meta SnapshotMeta, keep int) (snap Snaps
 	return snap, true, g.Prune(keep)
 }
 
-// Prune оставляет keep самых свежих снимков этого рабочего дерева
-// (keep <= 0 — не удалять ничего).
+// Prune keeps the keep most recent snapshots of this working tree
+// (keep <= 0 means delete nothing).
 func (g *Git) Prune(keep int) error {
 	snaps, err := g.Snapshots()
 	if err != nil {
@@ -328,7 +328,7 @@ func (g *Git) deleteOld(snaps []Snapshot, keep int) error {
 	if keep <= 0 || len(snaps) <= keep {
 		return nil
 	}
-	// update-ref --stdin удаляет все лишние ссылки одной командой git.
+	// update-ref --stdin deletes all the extra refs with a single git command.
 	var b strings.Builder
 	for _, s := range snaps[keep:] {
 		fmt.Fprintf(&b, "delete %s\n", s.Ref)
@@ -342,15 +342,15 @@ func (g *Git) refExists(ref string) bool {
 	return err == nil
 }
 
-// Snapshots возвращает точки восстановления этого рабочего дерева, новые первыми.
+// Snapshots returns the restore points of this working tree, newest first.
 func (g *Git) Snapshots() ([]Snapshot, error) { return g.list(SnapshotRefPrefix) }
 
-// Backups возвращает резервные копии «перед откатом», новые первыми.
+// Backups returns the "before rollback" backups, newest first.
 func (g *Git) Backups() ([]Snapshot, error) { return g.list(BackupRefPrefix) }
 
 func (g *Git) list(root string) ([]Snapshot, error) {
-	// %00 и %1e в формате for-each-ref — байты NUL и RS: разделители полей
-	// и записей, которых не бывает ни в именах ссылок, ни в тексте запроса.
+	// %00 and %1e in the for-each-ref format are the NUL and RS bytes: field
+	// and record separators that occur neither in ref names nor in prompt text.
 	out, err := g.run(nil, nil, "for-each-ref",
 		"--format=%(refname)%00%(objectname)%00%(committerdate:unix)%00%(tree)%00%(contents:body)%1e", root)
 	if err != nil {
@@ -363,15 +363,15 @@ func (g *Git) list(root string) ([]Snapshot, error) {
 		if len(f) != 5 {
 			continue
 		}
-		// Свои снимки лежат в <root><wt>/<имя>. Снимки старых версий лежали
-		// прямо в <root><имя>: их показываем только в основном дереве.
+		// Our own snapshots live in <root><wt>/<name>. Snapshots from older
+		// versions lived right in <root><name>: those are shown only in the main tree.
 		rest := strings.TrimPrefix(f[0], root)
 		own := strings.HasPrefix(rest, wt+"/") && strings.Count(rest, "/") == 1
 		legacy := wt == "main" && !strings.Contains(rest, "/")
 		if !own && !legacy {
 			continue
 		}
-		unix, _ := strconv.ParseInt(f[2], 10, 64) // ошибка → время 0, не критично
+		unix, _ := strconv.ParseInt(f[2], 10, 64) // an error gives time 0, which is not critical
 		snaps = append(snaps, Snapshot{Ref: f[0], Commit: f[1], Tree: f[3], Time: time.Unix(unix, 0), Meta: parseMeta(f[4])})
 	}
 	sort.SliceStable(snaps, func(i, j int) bool { return nameKey(snaps[i].Name()) > nameKey(snaps[j].Name()) })
@@ -380,9 +380,9 @@ func (g *Git) list(root string) ([]Snapshot, error) {
 
 var legacyNameRe = regexp.MustCompile(`^(\d{8}-\d{6})-000(?:-(\d+))?$`)
 
-// nameKey превращает имя снимка в строку, порядок которой совпадает с
-// порядком создания. У имён старого формата (…-000, …-000-2, …-000-12)
-// номер дополняется нулями, иначе «-12» оказался бы раньше «-2».
+// nameKey turns a snapshot name into a string whose order matches creation
+// order. For names in the old format (…-000, …-000-2, …-000-12) the number is
+// zero-padded, otherwise "-12" would sort before "-2".
 func nameKey(name string) string {
 	if m := legacyNameRe.FindStringSubmatch(name); m != nil {
 		n, _ := strconv.Atoi(m[2])
@@ -391,7 +391,7 @@ func nameKey(name string) string {
 	return name + "-000000"
 }
 
-// SnapshotAt возвращает n-й снимок с конца (1 — самый свежий).
+// SnapshotAt returns the n-th snapshot from the end (1 is the most recent).
 func (g *Git) SnapshotAt(n int) (Snapshot, error) {
 	snaps, err := g.Snapshots()
 	if err != nil {
@@ -406,9 +406,9 @@ func (g *Git) SnapshotAt(n int) (Snapshot, error) {
 	return snaps[n-1], nil
 }
 
-// FindSnapshot ищет снимок по имени или полной ссылке; пустое имя — самый
-// свежий. По имени находятся и резервные копии «перед откатом»
-// (refs/holdfast-backup/…) — так откат можно отменить.
+// FindSnapshot looks a snapshot up by name or full ref; an empty name means
+// the most recent one. "Before rollback" backups (refs/holdfast-backup/…) are
+// found by name too, which is how a rollback can be undone.
 func (g *Git) FindSnapshot(name string) (Snapshot, error) {
 	snaps, err := g.Snapshots()
 	if err != nil {
@@ -432,11 +432,11 @@ func (g *Git) FindSnapshot(name string) (Snapshot, error) {
 	return Snapshot{}, fmt.Errorf("snapshot %q not found in this working tree", name)
 }
 
-// TreeFiles возвращает множество файлов дерева tree под путями paths
-// (относительно корня репозитория; без paths — все файлы).
+// TreeFiles returns the set of files of the tree under paths
+// (relative to the repository root; without paths, all files).
 func (g *Git) TreeFiles(tree string, paths []string) (map[string]bool, error) {
 	args := append([]string{"ls-tree", "-r", "-z", "--name-only", tree, "--"}, paths...)
-	// GIT_LITERAL_PATHSPECS: пути — буквально, без glob-символов.
+	// GIT_LITERAL_PATHSPECS: paths are taken literally, without glob characters.
 	out, err := g.run([]string{"GIT_LITERAL_PATHSPECS=1"}, nil, args...)
 	if err != nil {
 		return nil, err
@@ -448,21 +448,21 @@ func (g *Git) TreeFiles(tree string, paths []string) (map[string]bool, error) {
 	return set, nil
 }
 
-// Untracked — неотслеживаемые и не игнорируемые файлы (то, что удалит git clean -f).
+// Untracked returns untracked, non-ignored files (what git clean -f would delete).
 func (g *Git) Untracked() ([]string, error) {
 	out, err := g.run(nil, nil, "ls-files", "--others", "--exclude-standard", "-z")
 	return splitZ(out), err
 }
 
-// DiffOptions — параметры вывода diff.
+// DiffOptions is the diff output parameters.
 type DiffOptions struct {
 	Stat       bool
 	NameStatus bool
 	Color      bool
 }
 
-// Diff печатает изменения рабочего дерева с момента снапшота — ровно то,
-// что отменит откат к нему.
+// Diff prints the working-tree changes since the snapshot: exactly what a
+// rollback to it would undo.
 func (g *Git) Diff(w io.Writer, snap Snapshot, opt DiffOptions) error {
 	plan, err := g.PlanRollback(snap)
 	if err != nil {
@@ -489,30 +489,30 @@ func (g *Git) Diff(w io.Writer, snap Snapshot, opt DiffOptions) error {
 	return err
 }
 
-// Changes — сводка различий между снапшотом и текущим деревом.
+// Changes is a summary of the differences between a snapshot and the current tree.
 type Changes struct {
-	Added    []string // появились после снапшота (будут удалены)
-	Modified []string // изменены или удалены (будут восстановлены)
+	Added    []string // appeared after the snapshot (will be deleted)
+	Modified []string // changed or deleted (will be restored)
 }
 
-// Empty — изменений нет.
+// Empty reports that there are no changes.
 func (c Changes) Empty() bool { return len(c.Added)+len(c.Modified) == 0 }
 
-// ChangesSince считает, что изменилось с момента снапшота (что отменит откат).
+// ChangesSince works out what has changed since the snapshot (what a rollback would undo).
 func (g *Git) ChangesSince(snap Snapshot) (Changes, error) {
 	plan, err := g.PlanRollback(snap)
 	return plan.Changes, err
 }
 
-// ChangesTo — что изменилось между снимком и деревом cur (из WriteTree).
+// ChangesTo is what changed between the snapshot and the tree cur (from WriteTree).
 func (g *Git) ChangesTo(snap Snapshot, cur string) (Changes, error) {
 	return g.changesBetween(snap.Commit+"^{tree}", cur)
 }
 
 func (g *Git) changesBetween(from, to string) (Changes, error) {
 	var c Changes
-	// -z: имена разделены нулевым байтом — надёжно для путей с пробелами.
-	// --no-renames: переименование = удаление + добавление.
+	// -z: names are separated by a NUL byte, which is reliable for paths with spaces.
+	// --no-renames: a rename = a deletion + an addition.
 	added, err := g.run(nil, nil, "diff", "--no-renames", "--name-only", "-z", "--diff-filter=A", from, to)
 	if err != nil {
 		return c, err
@@ -536,28 +536,28 @@ func splitZ(s string) []string {
 	return out
 }
 
-// RollbackPlan — что именно сделает откат. Строится до любых изменений.
+// RollbackPlan is what exactly a rollback will do. It is built before any changes are made.
 type RollbackPlan struct {
 	Snapshot Snapshot
-	// Tree — текущее состояние, включая всё, что откат перезапишет или
-	// удалит. Именно оно сохраняется как резервная копия.
+	// Tree is the current state, including everything the rollback will
+	// overwrite or delete. This is what gets saved as the backup.
 	Tree    string
 	Changes Changes
-	// Hidden — пути, которые обычный снимок не видит (git их сейчас
-	// игнорирует), но откат их затронет. Они сохранены в Tree принудительно.
+	// Hidden is the paths a regular snapshot does not see (git ignores them
+	// right now) but the rollback will touch. They are force-added to Tree.
 	Hidden []string
-	// Skipped — вложенные git-репозитории, которые откат оставит как есть.
+	// Skipped is the nested git repositories the rollback leaves as they are.
 	Skipped []string
 }
 
-// PlanRollback вычисляет план отката и гарантирует главное свойство: всё,
-// что откат перезапишет или удалит, сохранено в plan.Tree. Если сохранить
-// не удаётся — возвращает ошибку, и откат не начинается.
+// PlanRollback computes the rollback plan and guarantees the main property:
+// everything the rollback will overwrite or delete is saved in plan.Tree. If
+// it can't be saved, an error is returned and the rollback does not start.
 //
-// Обычный снимок (WriteTree) учитывает .gitignore. Но файл мог попасть в
-// .gitignore уже после точки восстановления: тогда он есть в точке, откат
-// его перезапишет, а в обычном снимке текущей версии не будет. Такие пути
-// добавляются в резервную копию принудительно (git add -f).
+// A regular snapshot (WriteTree) honours .gitignore. But a file may have been
+// added to .gitignore after the restore point: then it is in the restore
+// point, the rollback will overwrite it, and a regular snapshot would not
+// hold its current version. Such paths are force-added to the backup (git add -f).
 func (g *Git) PlanRollback(snap Snapshot) (RollbackPlan, error) {
 	plan := RollbackPlan{Snapshot: snap}
 	if wt := snap.Meta.Worktree; wt != "" && !samePath(wt, g.Dir) {
@@ -568,7 +568,7 @@ func (g *Git) PlanRollback(snap Snapshot) (RollbackPlan, error) {
 	if err != nil {
 		return plan, err
 	}
-	// Что есть в точке, но чего нет в обычном снимке текущего состояния.
+	// What is in the restore point but missing from a regular snapshot of the current state.
 	out, err := g.run(nil, nil, "diff", "--no-renames", "--name-only", "-z", "--diff-filter=D", snapTree, base)
 	if err != nil {
 		return plan, err
@@ -576,10 +576,10 @@ func (g *Git) PlanRollback(snap Snapshot) (RollbackPlan, error) {
 	hidden := map[string]bool{}
 	for _, rel := range splitZ(out) {
 		if _, err := os.Lstat(filepath.Join(g.Dir, filepath.FromSlash(rel))); err == nil {
-			hidden[rel] = true // на этом месте что-то лежит: файл, ссылка или папка
+			hidden[rel] = true // something sits at this path: a file, a symlink or a directory
 			continue
 		}
-		// На месте одной из родительских папок может лежать файл.
+		// A file may be sitting where one of the parent directories should be.
 		for parent := filepath.ToSlash(filepath.Dir(rel)); parent != "." && parent != "/"; parent = filepath.ToSlash(filepath.Dir(parent)) {
 			fi, err := os.Lstat(filepath.Join(g.Dir, filepath.FromSlash(parent)))
 			if err != nil {
@@ -608,11 +608,11 @@ func (g *Git) PlanRollback(snap Snapshot) (RollbackPlan, error) {
 	return plan, g.guardNestedRepos(snapTree, &plan)
 }
 
-// guardNestedRepos не даёт откату разрушить вложенные git-репозитории. В
-// дереве такой репозиторий — одна запись-ссылка без содержимого, поэтому
-// резервная копия его файлы не хранит. Появившийся после точки вложенный
-// репозиторий откат оставляет на месте; если же откату нужно записать файл
-// на его место или внутрь него — откат отменяется.
+// guardNestedRepos keeps a rollback from destroying nested git repositories.
+// In a tree such a repository is a single link entry without contents, so the
+// backup does not hold its files. A nested repository that appeared after the
+// restore point is left in place; but if the rollback needs to write a file
+// in its place or inside it, the rollback is cancelled.
 func (g *Git) guardNestedRepos(snapTree string, plan *RollbackPlan) error {
 	nested, err := g.gitlinks(plan.Tree)
 	if err != nil || len(nested) == 0 {
@@ -646,7 +646,7 @@ func (g *Git) guardNestedRepos(snapTree string, plan *RollbackPlan) error {
 	return nil
 }
 
-// gitlinks возвращает пути вложенных репозиториев (записи режима 160000) в дереве.
+// gitlinks returns the paths of nested repositories (mode 160000 entries) in a tree.
 func (g *Git) gitlinks(tree string) (map[string]bool, error) {
 	out, err := g.run(nil, nil, "ls-tree", "-r", "-z", tree)
 	if err != nil {
@@ -654,7 +654,7 @@ func (g *Git) gitlinks(tree string) (map[string]bool, error) {
 	}
 	links := map[string]bool{}
 	for _, rec := range splitZ(out) {
-		// "<режим> <тип> <хэш>\t<путь>"
+		// "<mode> <type> <hash>\t<path>"
 		meta, path, ok := strings.Cut(rec, "\t")
 		if ok && strings.HasPrefix(meta, "160000 ") {
 			links[path] = true
@@ -663,8 +663,8 @@ func (g *Git) gitlinks(tree string) (map[string]bool, error) {
 	return links, nil
 }
 
-// treeWithForced строит дерево base + принудительно добавленные пути
-// (в обход .gitignore) и проверяет, что каждый файл под ними сохранён.
+// treeWithForced builds the tree base + force-added paths (bypassing
+// .gitignore) and verifies that every file under them was saved.
 func (g *Git) treeWithForced(base string, paths []string) (string, error) {
 	var tree string
 	err := g.withTempIndex(func(env []string) error {
@@ -687,7 +687,7 @@ func (g *Git) treeWithForced(base string, paths []string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Проверка: всё, что лежит на диске под этими путями, есть в дереве.
+	// The check: everything on disk under these paths is in the tree.
 	for _, rel := range paths {
 		root := filepath.Join(g.Dir, filepath.FromSlash(rel))
 		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -716,7 +716,7 @@ func (g *Git) treeWithForced(base string, paths []string) (string, error) {
 	return tree, nil
 }
 
-// samePath сравнивает пути с учётом символических ссылок (/tmp → /private/tmp).
+// samePath compares paths with symlinks taken into account (/tmp → /private/tmp).
 func samePath(a, b string) bool {
 	if ra, err := filepath.EvalSymlinks(a); err == nil {
 		a = ra
@@ -727,10 +727,10 @@ func samePath(a, b string) bool {
 	return filepath.Clean(a) == filepath.Clean(b)
 }
 
-// Rollback возвращает рабочее дерево к снапшоту: удаляет появившиеся после
-// него файлы и восстанавливает изменённые и удалённые. Перед этим текущее
-// состояние (включая всё, что будет перезаписано) сохраняется в
-// refs/holdfast-backup/ — откат можно отменить откатом к этой копии.
+// Rollback returns the working tree to the snapshot: it deletes the files that
+// appeared after it and restores the changed and deleted ones. Before that the
+// current state (including everything that will be overwritten) is saved under
+// refs/holdfast-backup/, so the rollback can be undone by rolling back to that backup.
 func (g *Git) Rollback(snap Snapshot, now time.Time) (Changes, Snapshot, error) {
 	plan, err := g.PlanRollback(snap)
 	if err != nil {
@@ -751,9 +751,9 @@ func (g *Git) Rollback(snap Snapshot, now time.Time) (Changes, Snapshot, error) 
 		removeEmptyParents(g.Dir, filepath.Dir(p))
 	}
 
-	// checkout-index через временный индекс записывает файлы снапшота в
-	// рабочее дерево, не меняя ни HEAD, ни настоящий индекс. Пишем только
-	// изменившиеся пути: остальные файлы не трогаем вовсе.
+	// checkout-index through a temporary index writes the snapshot's files into
+	// the working tree without changing HEAD or the real index. Only the
+	// changed paths are written: the other files are not touched at all.
 	if len(ch.Modified) > 0 {
 		err = g.withTempIndex(func(env []string) error {
 			if _, err := g.run(env, nil, "read-tree", snap.Commit+"^{tree}"); err != nil {
@@ -773,18 +773,18 @@ func (g *Git) Rollback(snap Snapshot, now time.Time) (Changes, Snapshot, error) 
 	return ch, backup, nil
 }
 
-// removeEmptyParents удаляет опустевшие папки вверх до корня.
+// removeEmptyParents removes directories that became empty, up to the root.
 func removeEmptyParents(root, dir string) {
 	for dir != root && isWithin(root, dir) {
-		if err := os.Remove(dir); err != nil { // Remove не удаляет непустую папку
+		if err := os.Remove(dir); err != nil { // Remove does not delete a non-empty directory
 			return
 		}
 		dir = filepath.Dir(dir)
 	}
 }
 
-// AllRefs — все ссылки Holdfast во всех рабочих деревьях репозитория:
-// точки восстановления и резервные копии перед откатом.
+// AllRefs is every Holdfast ref in all working trees of the repository:
+// restore points and before-rollback backups.
 func (g *Git) AllRefs() ([]string, error) {
 	out, err := g.run(nil, nil, "for-each-ref", "--format=%(refname)", SnapshotRefPrefix, BackupRefPrefix)
 	if err != nil {
@@ -793,8 +793,8 @@ func (g *Git) AllRefs() ([]string, error) {
 	return strings.Fields(out), nil
 }
 
-// PurgeRefs удаляет все ссылки Holdfast (holdfast guard uninstall --purge).
-// Сами объекты git удалит позже обычная сборка мусора (git gc).
+// PurgeRefs deletes all Holdfast refs (holdfast guard uninstall --purge).
+// The git objects themselves are removed later by regular garbage collection (git gc).
 func (g *Git) PurgeRefs() (int, error) {
 	refs, err := g.AllRefs()
 	if err != nil || len(refs) == 0 {

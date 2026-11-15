@@ -17,22 +17,22 @@ func TestExtractExplicit(t *testing.T) {
 		want []string // "kind pattern line"
 	}{
 		{
-			"однострочный блок из ТЗ",
+			"single-line block",
 			"# P\n<!-- holdfast deny-paths: migrations/**, .github/workflows/** ask-commands: docker compose down -->",
 			[]string{"deny-path migrations/** 2", "deny-path .github/workflows/** 2", "ask-command docker compose down 2"},
 		},
 		{
-			"многострочный блок",
+			"multi-line block",
 			"<!-- holdfast\ndeny-paths: ./db/, schema.sql\nask-paths: docs/**\ndeny-commands: terraform destroy\n-->\ntext",
 			[]string{"deny-path db/** 2", "deny-path schema.sql 2", "ask-path docs/** 3", "deny-command terraform destroy 4"},
 		},
 		{
-			"значения на следующей строке",
+			"values on the next line",
 			"<!-- holdfast\ndeny-paths:\n  a/**,\n  b/**\n-->",
 			[]string{"deny-path a/** 3", "deny-path b/** 4"},
 		},
 		{
-			"выключатель lint — не блок правил",
+			"a lint disabling comment is not a rules block",
 			"<!-- holdfast-disable HF003 -->",
 			nil,
 		},
@@ -56,7 +56,7 @@ func TestExtractExplicit(t *testing.T) {
 func TestExtractHeuristic(t *testing.T) {
 	tests := []struct {
 		line string
-		want string // "kind pattern" или "" — ничего
+		want string // "kind pattern", or "" for nothing
 	}{
 		{"- Never edit `migrations/` by hand.", "deny-path migrations/**"},
 		{"Don't touch the generated/ folder", "deny-path generated/**"},
@@ -65,8 +65,8 @@ func TestExtractHeuristic(t *testing.T) {
 		{"Никогда не редактируй package-lock.json", "deny-path package-lock.json"},
 		{"Never run `make deploy` locally.", "deny-command make deploy"},
 		{"Не запускай `docker compose down`", "deny-command docker compose down"},
-		{"Never edit code without tests", ""}, // «code» — не путь
-		{"Never run tests in parallel", ""},   // без `кода` — не команда
+		{"Never edit code without tests", ""}, // "code" is not a path
+		{"Never run tests in parallel", ""},   // without `code` it is not a command
 		{"Always edit `src/`", ""},
 	}
 	for _, tt := range tests {
@@ -89,7 +89,7 @@ func TestExtractHeuristic(t *testing.T) {
 func TestHeuristicSkipsCodeBlocks(t *testing.T) {
 	text := "```\nnever edit `x/`\n```\n<!-- never edit `y/` -->"
 	if r := ExtractHeuristic("f", lines(text)); len(r) != 0 {
-		t.Errorf("в блоках кода и комментариях правил быть не должно: %+v", r)
+		t.Errorf("there must be no rules in code blocks and comments: %+v", r)
 	}
 }
 

@@ -24,8 +24,8 @@ func (r buildSectionRule) Check(doc *lint.Doc, _ *lint.Repo) []lint.Finding {
 			return nil
 		}
 	}
-	// Без заголовков (например, .cursorrules) достаточно блока кода
-	// или `команды` со словом build/test.
+	// Without headings (for example .cursorrules) a code block or a
+	// `command` with the word build/test is enough.
 	if len(doc.Sections) == 0 {
 		for i, line := range doc.Lines {
 			l := strings.ToLower(line)

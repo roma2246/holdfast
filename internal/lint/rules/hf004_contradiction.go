@@ -39,13 +39,13 @@ var (
 		"редактируй": "edit", "меняй": "edit", "коммить": "commit",
 		"устанавливай": "install", "удаляй": "delete", "добавляй": "add",
 	}
-	// Слова, после которых объект бессмыслен для сравнения.
+	// Words after which the object is meaningless for comparison.
 	stopObjects = map[string]bool{"it": true, "this": true, "that": true, "them": true, "это": true, "его": true, "их": true}
 )
 
 type directive struct {
 	key  string // "use yarn"
-	text string // как написано
+	text string // as written
 	line int
 }
 
@@ -69,8 +69,8 @@ func (r contradictionRule) Check(doc *lint.Doc, _ *lint.Repo) []lint.Finding {
 			continue
 		}
 		line := strings.ToLower(strings.ReplaceAll(raw, "`", ""))
-		// Сначала находим запреты и «вырезаем» их из строки, иначе
-		// «never use yarn» засчитался бы ещё и как «use yarn».
+		// First find the prohibitions and "cut" them out of the line, otherwise
+		// "never use yarn" would also be counted as "use yarn".
 		masked := line
 		mask := func(loc []int) {
 			masked = masked[:loc[0]] + strings.Repeat(" ", loc[1]-loc[0]) + masked[loc[1]:]
@@ -109,7 +109,7 @@ func (r contradictionRule) Check(doc *lint.Doc, _ *lint.Repo) []lint.Finding {
 				continue
 			}
 			reported[nd.key] = true
-			// Сообщаем о более поздней из двух строк.
+			// Report the later of the two lines.
 			first, second := pd, nd
 			if second.line < first.line {
 				first, second = second, first

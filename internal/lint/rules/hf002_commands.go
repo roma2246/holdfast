@@ -18,8 +18,8 @@ func (commandsRule) Description() string {
 	return "An npm run / make / just command is missing from package.json / Makefile / justfile"
 }
 
-// Ищем только в `коде` и в блоках ```...```: в обычном тексте
-// «make sure» — это не вызов make.
+// We look only in `code` and in ```...``` blocks: in plain text
+// "make sure" is not a call to make.
 var cmdRe = regexp.MustCompile(`(?:^|[\s;&|(])(npm run|pnpm run|yarn run|bun run|make|just)\s+((?:-{1,2}[A-Za-z][\w-]*(?:=\S+)?\s+)*)([A-Za-z0-9][A-Za-z0-9:_.\-/]*)`)
 
 func (r commandsRule) Check(doc *lint.Doc, repo *lint.Repo) []lint.Finding {
@@ -35,7 +35,7 @@ func (r commandsRule) Check(doc *lint.Doc, repo *lint.Repo) []lint.Finding {
 		for _, s := range snippets {
 			for _, m := range cmdRe.FindAllStringSubmatch(s, -1) {
 				tool, name := m[1], m[3]
-				// VAR=value — это переменная make, а не цель.
+				// VAR=value is a make variable, not a target.
 				if strings.Contains(name, "=") || (tool == "make" && strings.HasPrefix(m[2], "-C")) {
 					continue
 				}
@@ -48,7 +48,7 @@ func (r commandsRule) Check(doc *lint.Doc, repo *lint.Repo) []lint.Finding {
 	return out
 }
 
-// stripShellComment отрезает «# комментарий» в строке из блока кода.
+// stripShellComment cuts off a "# comment" in a line from a code block.
 func stripShellComment(s string) string {
 	for i := 0; i < len(s); i++ {
 		if s[i] == '#' && (i == 0 || s[i-1] == ' ' || s[i-1] == '\t') {

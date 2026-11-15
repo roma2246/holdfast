@@ -9,30 +9,31 @@ import (
 	"strings"
 )
 
-// Массовое удаление в проекте разрешается, только если оно действительно
-// обратимо. «Есть какой-то снимок» этого не доказывает, поэтому хук:
+// Mass deletion inside the project is allowed only when it is really
+// reversible. "Some snapshot exists" does not prove that, so the hook:
 //
-//  1. перечисляет файлы, которые команда удалит;
-//  2. прямо сейчас делает точку восстановления;
-//  3. проверяет, что каждый удаляемый файл в неё попал.
+//  1. lists the files the command would delete;
+//  2. takes a restore point right now;
+//  3. verifies that every file to be deleted made it into the restore point.
 //
-// Файлы, которые git игнорирует, в точку не попадают — откат их не вернёт.
-// Исключение — заведомо пересоздаваемые папки и файлы (node_modules, dist,
-// *.pyc …) из disposable_paths: их можно удалять без точки.
+// Files that git ignores are not in a restore point, so a rollback won't bring
+// them back. The exception is directories and files that are known to be
+// regenerated (node_modules, dist, *.pyc …) from disposable_paths: those may
+// be deleted without a restore point.
 
-// maxScanFiles — предел обхода при оценке удаления.
+// maxScanFiles is the walk limit when sizing up a deletion.
 const maxScanFiles = 20000
 
-// deleteScan — что удалит команда.
+// deleteScan is what the command would delete.
 type deleteScan struct {
-	files      []string // абсолютные пути файлов, кроме пересоздаваемых
-	inGit      bool     // затрагивает служебную папку .git
-	tooMany    bool     // файлов больше maxScanFiles
-	disposable bool     // встретились пересоздаваемые папки или файлы
+	files      []string // absolute file paths, disposable ones excluded
+	inGit      bool     // touches the .git directory
+	tooMany    bool     // more files than maxScanFiles
+	disposable bool     // disposable directories or files were encountered
 }
 
-// isDisposable — путь (относительно корня проекта) пересоздаваемый:
-// шаблон без '/' сравнивается с каждой частью пути, с '/' — со всем путём.
+// isDisposable reports whether a path (relative to the project root) is disposable:
+// a pattern without '/' is compared with every path component, one with '/' with the whole path.
 func (p *Policy) isDisposable(rel string) bool {
 	parts := strings.Split(filepath.ToSlash(rel), "/")
 	for _, pat := range p.cfg.DisposablePaths {
@@ -52,9 +53,9 @@ func (p *Policy) isDisposable(rel string) bool {
 	return false
 }
 
-// scanDelete перечисляет файлы, которые удалит команда.
-// targets — абсолютные пути (можно с glob); recursive — как rm -r;
-// match — фильтр по имени (find -name), nil — без фильтра.
+// scanDelete lists the files the command would delete.
+// targets are absolute paths (globs allowed); recursive is like rm -r;
+// match is a filter by name (find -name), nil means no filter.
 func (p *Policy) scanDelete(targets []string, recursive bool, match func(name string) bool) deleteScan {
 	var s deleteScan
 	add := func(path string) {
@@ -69,8 +70,8 @@ func (p *Policy) scanDelete(targets []string, recursive bool, match func(name st
 			s.files = append(s.files, path)
 		}
 	}
-	// walk обходит папку; all=true — фильтр по имени уже не применяется
-	// (папка сама подошла под фильтр и удаляется целиком).
+	// walk traverses a directory; all=true means the name filter no longer applies
+	// (the directory itself matched the filter and is deleted as a whole).
 	var walk func(root string, all bool)
 	walk = func(root string, all bool) {
 		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -89,8 +90,8 @@ func (p *Policy) scanDelete(targets []string, recursive bool, match func(name st
 			}
 			switch {
 			case d.Name() == ".git":
-				// Без фильтра удаление затронет .git целиком. С фильтром —
-				// только если под него подходит что-то внутри.
+				// Without a filter the deletion takes .git as a whole. With a
+				// filter, only if something inside matches it.
 				if all || match == nil || match(d.Name()) || gitInternalsMatch(path, match) {
 					s.inGit = true
 				}
@@ -146,7 +147,7 @@ func hasGitComponent(rel string) bool {
 	return false
 }
 
-// gitInternalsMatch — подходит ли под фильтр хоть один файл внутри .git.
+// gitInternalsMatch reports whether at least one file inside .git matches the filter.
 func gitInternalsMatch(gitDir string, match func(string) bool) bool {
 	found, seen := false, 0
 	_ = filepath.WalkDir(gitDir, func(_ string, d fs.DirEntry, err error) error {
@@ -154,7 +155,7 @@ func gitInternalsMatch(gitDir string, match func(string) bool) bool {
 			return nil
 		}
 		if seen++; seen > maxScanFiles {
-			found = true // не смогли проверить всё — считаем, что затронет
+			found = true // couldn't check everything, so assume it is affected
 		}
 		if match(d.Name()) {
 			found = true
@@ -167,7 +168,7 @@ func gitInternalsMatch(gitDir string, match func(string) bool) bool {
 	return found
 }
 
-// deleteInProject решает, можно ли удалить targets внутри проекта.
+// deleteInProject decides whether targets inside the project may be deleted.
 func (p *Policy) deleteInProject(what string, targets []string, recursive bool, match func(string) bool) Verdict {
 	if len(targets) == 0 {
 		return allowVerdict
@@ -176,7 +177,7 @@ func (p *Policy) deleteInProject(what string, targets []string, recursive bool, 
 	if s.inGit {
 		return Verdict{Deny, "delete-git-dir", what + " would touch the .git directory, which holds the project history and the restore points. Name specific project files or directories"}
 	}
-	// rm -r dir удаляет и файлы внутри: правила путей применяем к каждому.
+	// rm -r dir also deletes the files inside: path rules apply to each one.
 	rules := allowVerdict
 	for _, f := range s.files {
 		if p.isService(f) {
@@ -191,7 +192,7 @@ func (p *Policy) deleteInProject(what string, targets []string, recursive bool, 
 	}
 	if len(s.files) <= p.cfg.MaxDeletes && !s.tooMany {
 		if s.disposable && !p.cfg.Strict() {
-			p.bestEffortSnapshot(what) // на случай несохранённых правок в build/, dist/ и т.п.
+			p.bestEffortSnapshot(what) // in case of unsaved edits in build/, dist/ and the like
 		}
 		return allowVerdict
 	}
@@ -214,8 +215,8 @@ func (p *Policy) deleteInProject(what string, targets []string, recursive bool, 
 	return p.snapshotCovers(g, what, rel)
 }
 
-// snapshotCovers делает точку восстановления и проверяет, что все files
-// (пути относительно корня репозитория) в неё попали.
+// snapshotCovers takes a restore point and verifies that all files
+// (paths relative to the repository root) made it into it.
 func (p *Policy) snapshotCovers(g *Git, what string, files []string) Verdict {
 	_ = EnsureStateDir(p.Root)
 	snap, _, err := g.Checkpoint(p.Now(), SnapshotMeta{Kind: KindPreDelete, Session: p.Session, Prompt: what}, p.cfg.KeepSnapshots)
@@ -234,7 +235,7 @@ func (p *Policy) snapshotCovers(g *Git, what string, files []string) Verdict {
 		}
 	}
 	if len(lost) == 0 {
-		return allowVerdict // всё удаляемое есть в точке: holdfast guard rollback вернёт
+		return allowVerdict // everything being deleted is in the restore point: holdfast guard rollback brings it back
 	}
 	sort.Strings(lost)
 	sample := lost
@@ -247,7 +248,7 @@ func (p *Policy) snapshotCovers(g *Git, what string, files []string) Verdict {
 		what, len(lost), strings.Join(sample, ", "), map[bool]string{true: " …", false: ""}[len(lost) > 3])}
 }
 
-// bestEffortSnapshot делает точку, не влияя на решение.
+// bestEffortSnapshot takes a restore point without affecting the decision.
 func (p *Policy) bestEffortSnapshot(what string) {
 	g, err := OpenGit(p.Root)
 	if err != nil {
@@ -257,9 +258,9 @@ func (p *Policy) bestEffortSnapshot(what string) {
 	_, _, _ = g.Checkpoint(p.Now(), SnapshotMeta{Kind: KindPreDelete, Session: p.Session, Prompt: what}, p.cfg.KeepSnapshots)
 }
 
-// repoRel переводит абсолютный путь внутри проекта в путь относительно
-// корня git-репозитория. Проект может быть подпапкой репозитория, а git
-// возвращает корень с раскрытыми символическими ссылками (/private/var/…).
+// repoRel converts an absolute path inside the project into a path relative
+// to the git repository root. The project may be a subdirectory of the repository,
+// and git returns the root with symlinks resolved (/private/var/…).
 func (p *Policy) repoRel(g *Git, abs string) string {
 	root, gitRoot := p.Root, g.Dir
 	if r, err := filepath.EvalSymlinks(root); err == nil {
@@ -275,7 +276,7 @@ func (p *Policy) repoRel(g *Git, abs string) string {
 	return filepath.ToSlash(filepath.Join(prefix, p.rel(abs)))
 }
 
-// checkFind — find с удалением (-delete, -exec rm).
+// checkFind handles find with deletion (-delete, -exec rm).
 func (p *Policy) checkFind(args []word) Verdict {
 	if !hasArg(args, "-delete") && !execsRm(args) {
 		return allowVerdict
@@ -296,7 +297,7 @@ func (p *Policy) checkFind(args []word) Verdict {
 		starts = []word{{s: "."}}
 	}
 
-	// Фильтр по имени понимаем только в простом виде: -name/-iname без отрицаний.
+	// The name filter is understood only in its simple form: -name/-iname without negations.
 	var globs []string
 	simple := true
 	for j, a := range expr {
@@ -336,7 +337,7 @@ func (p *Policy) checkFind(args []word) Verdict {
 		case abs == "/" || abs == p.Home || isWithin(abs, p.Home) || isWithin(abs, p.Root):
 			return Verdict{Deny, "rm-outside-repo", fmt.Sprintf("find with deletion on %s is not allowed: this directory contains the whole project or the whole home directory. Name a specific project directory", abs)}
 		case !p.cfg.Strict() && p.isTempPath(abs):
-			// временные файлы вне проекта
+			// temporary files outside the project
 		default:
 			return p.soft("rm-outside-repo", fmt.Sprintf("find with deletion outside the project (%s)", abs),
 				"Delete only project files or temporary files in /tmp")
@@ -345,14 +346,14 @@ func (p *Policy) checkFind(args []word) Verdict {
 	return p.deleteInProject("deleting with find", targets, true, match)
 }
 
-// checkGitClean — git clean -f в папке dir.
+// checkGitClean handles git clean -f in the directory dir.
 func (p *Policy) checkGitClean(dir string, dirUnknown bool) Verdict {
 	if dirUnknown {
 		return p.soft("git-clean", "git clean in an unknown directory (cd into a variable)", "Give the path explicitly: git -C <path> clean …")
 	}
 	repo := findGitRoot(dir)
 	if repo == "" {
-		return allowVerdict // не git-репозиторий: git сам сообщит об ошибке
+		return allowVerdict // not a git repository: git will report the error itself
 	}
 	if !samePath(repo, findGitRoot(p.Root)) {
 		return p.soft("git-clean", fmt.Sprintf("git clean in another repository (%s): the project's restore points do not cover it", repo),

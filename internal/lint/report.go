@@ -8,7 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Summary — количество находок по уровням.
+// Summary is the number of findings per level.
 type Summary struct {
 	Files    int `json:"files"`
 	Errors   int `json:"errors"`
@@ -16,7 +16,7 @@ type Summary struct {
 	Infos    int `json:"infos"`
 }
 
-// Summarize считает находки по уровням.
+// Summarize counts findings per level.
 func Summarize(files int, fs []Finding) Summary {
 	s := Summary{Files: files}
 	for _, f := range fs {
@@ -32,10 +32,10 @@ func Summarize(files int, fs []Finding) Summary {
 	return s
 }
 
-// WriteJSON печатает отчёт для CI.
+// WriteJSON prints a report for CI.
 func WriteJSON(w io.Writer, files int, fs []Finding) error {
 	if fs == nil {
-		fs = []Finding{} // чтобы в JSON был [], а не null
+		fs = []Finding{} // so that the JSON has [] instead of null
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
@@ -45,8 +45,8 @@ func WriteJSON(w io.Writer, files int, fs []Finding) error {
 	}{fs, Summarize(files, fs)})
 }
 
-// WriteHuman печатает цветной отчёт. Цвета включаются, только если w —
-// терминал: lipgloss.NewRenderer сам определяет возможности вывода.
+// WriteHuman prints a colored report. Colors are enabled only when w is a
+// terminal: lipgloss.NewRenderer detects the output capabilities itself.
 func WriteHuman(w io.Writer, files int, fs []Finding) {
 	r := lipgloss.NewRenderer(w)
 	var (
@@ -63,8 +63,8 @@ func WriteHuman(w io.Writer, files int, fs []Finding) {
 
 	for _, f := range fs {
 		loc := fmt.Sprintf("%s:%d", f.File, f.Line)
-		// Width выравнивает колонку уровня, как в примере из ТЗ:
-		// CLAUDE.md:14  HF002 error  «npm run e2e» — ...
+		// Width aligns the severity column:
+		// CLAUDE.md:14  HF002 error  "npm run e2e": ...
 		fmt.Fprintf(w, "%s  %s %s  %s\n",
 			fileStyle.Render(loc),
 			ruleStyle.Render(f.RuleID),

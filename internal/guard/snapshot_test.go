@@ -13,11 +13,11 @@ import (
 	"time"
 )
 
-// gitRepo создаёт временный git-репозиторий с одним коммитом.
+// gitRepo creates a temporary git repository with one commit.
 func gitRepo(t *testing.T, commit bool) string {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git не установлен")
+		t.Skip("git is not installed")
 	}
 	dir := t.TempDir()
 	git(t, dir, "init", "-q")
@@ -70,7 +70,7 @@ func TestSnapshotRollback(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			dir := gitRepo(t, withCommit)
-			// Состояние до сессии: правка, staged-правка и неотслеживаемый файл.
+			// The state before the session: an edit, a staged edit and an untracked file.
 			write(t, dir, "a.txt", "edited before session\n")
 			write(t, dir, "untracked.txt", "untracked before\n")
 			write(t, dir, "debug.log", "ignored\n")
@@ -86,25 +86,25 @@ func TestSnapshotRollback(t *testing.T) {
 				t.Fatal(err)
 			}
 			if _, err := g.FindSnapshot(""); !errors.Is(err, ErrNoSnapshot) {
-				t.Fatalf("ожидалась ErrNoSnapshot, получено %v", err)
+				t.Fatalf("expected ErrNoSnapshot, got %v", err)
 			}
 			snap, err := g.CreateSnapshot(time.Now(), SnapshotMeta{})
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			// Снапшот не трогает индекс, ветки и stash пользователя.
+			// A snapshot does not touch the user's index, branches or stash.
 			if got := git(t, dir, "diff", "--cached", "--name-only"); got != stagedBefore {
-				t.Errorf("индекс изменился: %q → %q", stagedBefore, got)
+				t.Errorf("the index changed: %q → %q", stagedBefore, got)
 			}
 			if got := git(t, dir, "branch", "-a"); got != branchesBefore {
-				t.Errorf("ветки изменились")
+				t.Errorf("the branches changed")
 			}
 			if got := git(t, dir, "stash", "list"); got != "" {
-				t.Errorf("stash изменился: %q", got)
+				t.Errorf("the stash changed: %q", got)
 			}
 
-			// «Сессия агента».
+			// The "agent session".
 			write(t, dir, "a.txt", "agent rewrote a\n")
 			os.Remove(filepath.Join(dir, "untracked.txt"))
 			write(t, dir, "new/deep/file.go", "package x\n")
@@ -116,7 +116,7 @@ func TestSnapshotRollback(t *testing.T) {
 				t.Fatal(err)
 			}
 			if strings.Join(ch.Added, ",") != "c.txt,new/deep/file.go" || strings.Join(ch.Modified, ",") != "a.txt,untracked.txt" {
-				t.Fatalf("изменения: %+v", ch)
+				t.Fatalf("changes: %+v", ch)
 			}
 			var diff bytes.Buffer
 			if err := g.Diff(&diff, snap, DiffOptions{}); err != nil {
@@ -135,7 +135,7 @@ func TestSnapshotRollback(t *testing.T) {
 				t.Fatalf("FindSnapshot: %+v %v", found, err)
 			}
 			if _, err := g.FindSnapshot("nope"); err == nil {
-				t.Error("ожидалась ошибка для неизвестного снапшота")
+				t.Error("expected an error for an unknown snapshot")
 			}
 
 			done, backup, err := g.Rollback(snap, time.Now())
@@ -153,21 +153,21 @@ func TestSnapshotRollback(t *testing.T) {
 			}
 			for _, gone := range []string{"c.txt", "new"} {
 				if _, err := os.Stat(filepath.Join(dir, gone)); !os.IsNotExist(err) {
-					t.Errorf("%s должен быть удалён", gone)
+					t.Errorf("%s must be deleted", gone)
 				}
 			}
-			// Игнорируемые файлы не трогаем.
+			// Ignored files are left alone.
 			if got := read(t, dir, "debug.log"); got != "agent log\n" {
 				t.Errorf("debug.log = %q", got)
 			}
 			if got := git(t, dir, "diff", "--cached", "--name-only"); got != stagedBefore {
-				t.Errorf("индекс изменился после отката")
+				t.Errorf("the index changed after the rollback")
 			}
 			if ch, _ := g.ChangesSince(snap); !ch.Empty() {
-				t.Errorf("после отката остались изменения: %+v", ch)
+				t.Errorf("changes remain after the rollback: %+v", ch)
 			}
 
-			// Резервная копия позволяет отменить откат.
+			// The backup makes it possible to undo the rollback.
 			backups, err := g.Backups()
 			if err != nil || len(backups) != 1 || backups[0].Commit != backup.Commit {
 				t.Fatalf("backups: %+v %v", backups, err)
@@ -190,13 +190,13 @@ func TestSnapshotUniqueRefs(t *testing.T) {
 	}
 	snaps, _ := g.Snapshots()
 	if len(snaps) != 2 {
-		t.Fatalf("снапшотов %d", len(snaps))
+		t.Fatalf("%d snapshots", len(snaps))
 	}
 }
 
 func TestOpenGitNotRepo(t *testing.T) {
 	if _, err := OpenGit(t.TempDir()); err == nil {
-		t.Fatal("ожидалась ошибка вне git-репозитория")
+		t.Fatal("expected an error outside a git repository")
 	}
 }
 
@@ -211,35 +211,35 @@ func TestCheckpointDedupAndPrune(t *testing.T) {
 
 	s1, created, err := g.Checkpoint(now, meta, 3)
 	if err != nil || !created {
-		t.Fatalf("первая точка: %v %v", created, err)
+		t.Fatalf("first restore point: %v %v", created, err)
 	}
-	// Ничего не изменилось — новая точка не нужна.
+	// Nothing changed, so no new restore point is needed.
 	s2, created, err := g.Checkpoint(now.Add(time.Minute), meta, 3)
 	if err != nil || created || s2.Ref != s1.Ref {
-		t.Fatalf("без изменений не должно быть новой точки: %v %+v", created, s2)
+		t.Fatalf("there must be no new restore point without changes: %v %+v", created, s2)
 	}
-	// Изменения → новые точки; старше трёх — удаляются.
+	// Changes → new restore points; those beyond three are deleted.
 	for i := 0; i < 4; i++ {
 		write(t, dir, "a.txt", fmt.Sprintf("v%d\n", i))
 		if _, created, err := g.Checkpoint(now.Add(time.Duration(i+2)*time.Minute), meta, 3); err != nil || !created {
-			t.Fatalf("точка %d: %v %v", i, created, err)
+			t.Fatalf("restore point %d: %v %v", i, created, err)
 		}
 	}
 	snaps, _ := g.Snapshots()
 	if len(snaps) != 3 {
-		t.Fatalf("должно остаться 3 точки, осталось %d", len(snaps))
+		t.Fatalf("3 restore points must remain, %d did", len(snaps))
 	}
 	m := snaps[0].Meta
 	if m.Kind != KindCheckpoint || m.Session != "s1" || m.Prompt != "add logging to app.py" || snaps[0].Tree == "" {
-		t.Fatalf("метаданные: %+v tree=%q", m, snaps[0].Tree)
+		t.Fatalf("metadata: %+v tree=%q", m, snaps[0].Tree)
 	}
 	if at, err := g.SnapshotAt(2); err != nil || at.Ref != snaps[1].Ref {
 		t.Fatalf("SnapshotAt(2): %+v %v", at, err)
 	}
 	if _, err := g.SnapshotAt(9); err == nil {
-		t.Fatal("несуществующая точка")
+		t.Fatal("a non-existent restore point")
 	}
-	// Ручной снимок старого формата читается как manual.
+	// A manual snapshot in the old format is read as manual.
 	manual, err := g.CreateSnapshot(now.Add(time.Hour), SnapshotMeta{})
 	if err != nil {
 		t.Fatal(err)
@@ -248,10 +248,10 @@ func TestCheckpointDedupAndPrune(t *testing.T) {
 		t.Fatalf("manual: %+v", got.Meta)
 	}
 	if parseMeta("holdfast snapshot 2026").Kind != KindManual {
-		t.Fatal("старый формат")
+		t.Fatal("old format")
 	}
 	if g.Prune(0) != nil {
-		t.Fatal("Prune(0) ничего не делает")
+		t.Fatal("Prune(0) does nothing")
 	}
 }
 
@@ -263,15 +263,15 @@ func TestRunCheckpointHook(t *testing.T) {
 	RunCheckpoint(strings.NewReader(in), io.Discard, env)
 	write(t, dir, "a.txt", "agent edit\n")
 	RunCheckpoint(strings.NewReader(in), io.Discard, env)
-	RunCheckpoint(strings.NewReader(in), io.Discard, env) // без изменений
+	RunCheckpoint(strings.NewReader(in), io.Discard, env) // no changes
 
 	g, _ := OpenGit(dir)
 	snaps, _ := g.Snapshots()
 	if len(snaps) != 2 || snaps[0].Meta.Prompt != "fix the tests" {
-		t.Fatalf("точки: %+v", snaps)
+		t.Fatalf("restore points: %+v", snaps)
 	}
 	if snaps[0].Meta.Session != "sess-42" || !samePath(snaps[0].Meta.Worktree, dir) {
-		t.Fatalf("метаданные точки: %+v", snaps[0].Meta)
+		t.Fatalf("restore point metadata: %+v", snaps[0].Meta)
 	}
 	entries, _ := ReadLog(dir)
 	rules := []string{}
@@ -279,13 +279,13 @@ func TestRunCheckpointHook(t *testing.T) {
 		rules = append(rules, e.Rule)
 	}
 	if strings.Join(rules, ",") != "checkpoint,checkpoint,unchanged" {
-		t.Fatalf("журнал: %v", rules)
+		t.Fatalf("log: %v", rules)
 	}
-	// Вне git и с мусором на входе — молча ничего не делает.
+	// Outside git and with garbage on input it silently does nothing.
 	RunCheckpoint(strings.NewReader("not json"), io.Discard, testEnv(t.TempDir()))
 }
 
-// Быстрый путь (постоянный индекс) обязан давать то же дерево, что и честный.
+// The fast path (the persistent index) must produce the same tree as the honest one.
 func TestWriteTreeCachedMatchesFresh(t *testing.T) {
 	dir := gitRepo(t, true)
 	g, err := OpenGit(dir)
@@ -300,30 +300,30 @@ func TestWriteTreeCachedMatchesFresh(t *testing.T) {
 			t.Fatalf("%s: cached=%s (%v) fresh=%s (%v)", step, cached, err1, fresh, err2)
 		}
 	}
-	same("чистое дерево")
+	same("clean tree")
 	write(t, dir, "a.txt", "changed\n")
 	write(t, dir, "new/untracked.txt", "new\n")
 	write(t, dir, "debug.log", "ignored\n")
-	same("правка, новый файл, игнорируемый файл")
+	same("an edit, a new file, an ignored file")
 	os.Remove(filepath.Join(dir, "b.txt"))
-	same("удаление отслеживаемого файла")
-	// Файл был в прошлых снимках, а потом попал в .gitignore.
+	same("deleting a tracked file")
+	// The file was in earlier snapshots and then got into .gitignore.
 	write(t, dir, ".gitignore", "*.log\nnew/\n")
-	same("новый файл стал игнорируемым")
-	// Новый коммит и принудительно добавленный игнорируемый файл.
+	same("a new file became ignored")
+	// A new commit and a force-added ignored file.
 	git(t, dir, "add", "-A")
 	git(t, dir, "add", "-f", "debug.log")
 	git(t, dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "second")
 	write(t, dir, "debug.log", "changed after the commit\n")
-	same("после коммита, отслеживаемый игнорируемый файл")
+	same("after a commit, a tracked ignored file")
 	os.Remove(filepath.Join(dir, "new", "untracked.txt"))
-	same("удаление игнорируемого неотслеживаемого файла")
+	same("deleting an ignored untracked file")
 
-	// Без коммитов быстрый путь не используется.
+	// Without commits the fast path is not used.
 	empty := gitRepo(t, false)
 	ge, _ := OpenGit(empty)
 	if _, err := ge.writeTreeCached(); err == nil {
-		t.Fatal("без коммитов ожидалась ошибка быстрого пути")
+		t.Fatal("expected a fast-path error without commits")
 	}
 	if _, err := ge.WriteTree(); err != nil {
 		t.Fatal(err)

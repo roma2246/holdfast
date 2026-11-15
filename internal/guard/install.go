@@ -14,19 +14,19 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
-// HookMatcher — инструменты, перед которыми вызывается хук.
+// HookMatcher is the tools the hook is called before.
 const HookMatcher = "Bash|Edit|Write|MultiEdit|NotebookEdit|Read"
 
-// DefaultBin — как Claude Code вызывает holdfast (бинарник из PATH).
+// DefaultBin is how Claude Code invokes holdfast (the binary from PATH).
 const DefaultBin = "holdfast"
 
-// InstallHook прописывает в .claude/settings.json (или settings.local.json)
-// два хука, не затирая другие настройки:
-//   - PreToolUse: `<bin> guard check` — проверка каждого действия агента;
-//   - UserPromptSubmit: `<bin> guard checkpoint` — точка восстановления
-//     перед каждым запросом пользователя.
+// InstallHook registers two hooks in .claude/settings.json (or
+// settings.local.json) without clobbering other settings:
+//   - PreToolUse: `<bin> guard check` checks every action of the agent;
+//   - UserPromptSubmit: `<bin> guard checkpoint` takes a restore point
+//     before every user prompt.
 //
-// Повторная установка ничего не дублирует; changed=false — всё уже было.
+// Installing again duplicates nothing; changed=false means everything was already there.
 func InstallHook(root string, local bool, bin string) (path string, changed bool, err error) {
 	if bin == "" {
 		bin = DefaultBin
@@ -37,7 +37,7 @@ func InstallHook(root string, local bool, bin string) (path string, changed bool
 		return path, false, err
 	}
 
-	hooks, _ := settings["hooks"].(map[string]any) // «type assertion» с проверкой
+	hooks, _ := settings["hooks"].(map[string]any) // a "type assertion" with a check
 	if hooks == nil {
 		hooks = map[string]any{}
 	}
@@ -46,7 +46,7 @@ func InstallHook(root string, local bool, bin string) (path string, changed bool
 		timeout                 int
 	}{
 		{"PreToolUse", HookMatcher, shellQuoteArg(bin) + " guard check", 10},
-		// Снимок большого репозитория может занять секунды — запас по времени.
+		// A snapshot of a large repository can take seconds, hence the generous timeout.
 		{"UserPromptSubmit", "", shellQuoteArg(bin) + " guard checkpoint", 30},
 	} {
 		list, _ := hooks[h.event].([]any)
@@ -70,7 +70,7 @@ func InstallHook(root string, local bool, bin string) (path string, changed bool
 	return path, true, writeSettings(path, settings)
 }
 
-// SettingsPath — .claude/settings.json или .claude/settings.local.json.
+// SettingsPath is .claude/settings.json or .claude/settings.local.json.
 func SettingsPath(root string, local bool) string {
 	name := "settings.json"
 	if local {
@@ -79,10 +79,10 @@ func SettingsPath(root string, local bool) string {
 	return filepath.Join(root, ".claude", name)
 }
 
-// readSettings читает настройки Claude Code; нет файла — пустые настройки.
+// readSettings reads the Claude Code settings; a missing file means empty settings.
 func readSettings(path string) (map[string]any, error) {
-	// map[string]any — «произвольный JSON-объект»: так мы сохраним все
-	// чужие ключи, о которых ничего не знаем.
+	// map[string]any is "an arbitrary JSON object": this way we keep all the
+	// foreign keys we know nothing about.
 	settings := map[string]any{}
 	data, err := os.ReadFile(path)
 	switch {
@@ -96,7 +96,7 @@ func readSettings(path string) (map[string]any, error) {
 		return nil, err
 	}
 	if settings == nil {
-		settings = map[string]any{} // в файле было JSON-значение null
+		settings = map[string]any{} // the file held the JSON value null
 	}
 	return settings, nil
 }
@@ -112,18 +112,18 @@ func writeSettings(path string, settings map[string]any) error {
 	return os.WriteFile(path, append(out, '\n'), 0o644)
 }
 
-// InstalledHook — хук holdfast, найденный в настройках Claude Code.
+// InstalledHook is a holdfast hook found in the Claude Code settings.
 type InstalledHook struct {
-	File    string // путь к settings.json или settings.local.json
-	Event   string // PreToolUse или UserPromptSubmit
-	Command string // как записано в настройках
-	Bin     string // программа, которую запустит Claude Code (кавычки сняты)
+	File    string // path to settings.json or settings.local.json
+	Event   string // PreToolUse or UserPromptSubmit
+	Command string // as written in the settings
+	Bin     string // the program Claude Code will run (quotes removed)
 }
 
-// parseHoldfastHook распознаёт команду хука holdfast: `<bin> guard check`
-// или `<bin> guard checkpoint`, где имя файла bin начинается с «holdfast»
-// (так установка с --bin /полный/путь/holdfast тоже узнаётся). Команда
-// разбирается через AST shell, чтобы правильно снять кавычки с пути.
+// parseHoldfastHook recognizes a holdfast hook command: `<bin> guard check`
+// or `<bin> guard checkpoint`, where the file name of bin starts with
+// "holdfast" (so an install with --bin /full/path/holdfast is recognized too).
+// The command is parsed through the shell AST to unquote the path correctly.
 func parseHoldfastHook(command string) (bin, sub string, ok bool) {
 	file, err := parseShell(command)
 	if err != nil || len(file.Stmts) != 1 {
@@ -143,12 +143,12 @@ func parseHoldfastHook(command string) (bin, sub string, ok bool) {
 	return w[0].s, w[2].s, true
 }
 
-// hookEvents — какое событие Claude Code какой подкомандой обслуживается.
+// hookEvents maps each Claude Code event to the subcommand that serves it.
 var hookEvents = map[string]string{"PreToolUse": "check", "UserPromptSubmit": "checkpoint"}
 
-// FindHooks ищет хуки holdfast в .claude/settings.json и settings.local.json.
-// Хук считается подключённым, только если подкоманда соответствует событию:
-// `guard checkpoint` в PreToolUse не создаст ни одной точки.
+// FindHooks looks for holdfast hooks in .claude/settings.json and settings.local.json.
+// A hook counts as connected only if the subcommand matches the event:
+// `guard checkpoint` under PreToolUse would never create a restore point.
 func FindHooks(root string) ([]InstalledHook, error) {
 	var (
 		found []InstalledHook
@@ -177,15 +177,15 @@ func FindHooks(root string) ([]InstalledHook, error) {
 			}
 		}
 	}
-	// errors.Join объединяет несколько ошибок в одну (nil, если их нет).
+	// errors.Join combines several errors into one (nil if there are none).
 	return found, errors.Join(errs...)
 }
 
-// UninstallHook убирает из .claude/settings.json (или settings.local.json)
-// хуки holdfast — обратное к InstallHook. Остальные настройки и чужие хуки
-// не трогаются; опустевшие группы, события и ключ "hooks" удаляются, чтобы
-// после install + uninstall файл выглядел как до установки.
-// removed — сколько команд удалено (0 — хуков holdfast в файле не было).
+// UninstallHook removes the holdfast hooks from .claude/settings.json (or
+// settings.local.json): the inverse of InstallHook. Other settings and foreign
+// hooks are left alone; emptied groups, events and the "hooks" key are removed
+// so that after install + uninstall the file looks the way it did before.
+// removed is how many commands were removed (0 means the file had no holdfast hooks).
 func UninstallHook(root string, local bool) (path string, removed int, err error) {
 	path = SettingsPath(root, local)
 	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
@@ -206,7 +206,7 @@ func UninstallHook(root string, local bool) (path string, removed int, err error
 			g, ok := group.(map[string]any)
 			hs, isList := g["hooks"].([]any)
 			if !ok || !isList {
-				keptGroups = append(keptGroups, group) // чужой формат — не трогаем
+				keptGroups = append(keptGroups, group) // a foreign format: leave it alone
 				continue
 			}
 			var kept []any
@@ -227,7 +227,7 @@ func UninstallHook(root string, local bool) (path string, removed int, err error
 			}
 		}
 		if len(keptGroups) == 0 {
-			delete(hooks, event) // удалять ключи map внутри range в Go безопасно
+			delete(hooks, event) // deleting map keys inside a range loop is safe in Go
 		} else {
 			hooks[event] = keptGroups
 		}
@@ -243,8 +243,8 @@ func UninstallHook(root string, local bool) (path string, removed int, err error
 
 var shellSafeRe = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,./-]+$`)
 
-// shellQuoteArg экранирует путь для команды хука: Claude Code запускает её
-// через shell, и путь с пробелом без кавычек распался бы на два слова.
+// shellQuoteArg quotes a path for the hook command: Claude Code runs it
+// through a shell, and an unquoted path with a space would split into two words.
 func shellQuoteArg(s string) string {
 	if shellSafeRe.MatchString(s) {
 		return s

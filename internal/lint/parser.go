@@ -6,37 +6,37 @@ import (
 	"strings"
 )
 
-// Section — заголовок markdown и диапазон строк под ним.
+// Section is a markdown heading and the range of lines under it.
 type Section struct {
 	Title     string
-	Level     int // количество '#'
-	StartLine int // 1-based, строка заголовка
-	EndLine   int // последняя строка секции включительно
+	Level     int // number of '#'
+	StartLine int // 1-based, the heading line
+	EndLine   int // the last line of the section, inclusive
 }
 
-// Doc — разобранный файл инструкций агента.
+// Doc is a parsed agent instructions file.
 type Doc struct {
-	Path     string   // путь относительно корня репозитория (для вывода)
-	AbsPath  string   // абсолютный путь
-	Dir      string   // абсолютная папка файла
-	Text     string   // весь текст
-	Lines    []string // строки без '\n'; Lines[0] — строка 1
+	Path     string   // path relative to the repository root (for output)
+	AbsPath  string   // absolute path
+	Dir      string   // absolute directory of the file
+	Text     string   // the whole text
+	Lines    []string // lines without '\n'; Lines[0] is line 1
 	Sections []Section
 
-	inCode       []bool          // inCode[i] — строка i+1 внутри ```блока```
-	disabledFile map[string]bool // правила, выключенные на весь файл
+	inCode       []bool          // inCode[i] means line i+1 is inside a ```block```
+	disabledFile map[string]bool // rules disabled for the whole file
 	disabledLine map[int]map[string]bool
 }
 
 var (
 	headingRe = regexp.MustCompile(`^(#{1,6})\s+(.+?)\s*#*\s*$`)
 	fenceRe   = regexp.MustCompile("^\\s*(```|~~~)")
-	// <!-- holdfast-disable HF003 HF005 --> и
+	// <!-- holdfast-disable HF003 HF005 --> and
 	// <!-- holdfast-disable-next-line HF001 -->
 	disableRe = regexp.MustCompile(`<!--\s*holdfast-disable(-next-line)?\s+([A-Za-z0-9,\s]+?)\s*-->`)
 )
 
-// ParseFile читает и разбирает файл.
+// ParseFile reads and parses a file.
 func ParseFile(absPath, relPath string) (*Doc, error) {
 	data, err := os.ReadFile(absPath)
 	if err != nil {
@@ -45,11 +45,11 @@ func ParseFile(absPath, relPath string) (*Doc, error) {
 	return Parse(absPath, relPath, string(data)), nil
 }
 
-// Parse разбирает текст markdown: секции, блоки кода, комментарии-выключатели.
+// Parse parses markdown text: sections, code blocks, disabling comments.
 func Parse(absPath, relPath, text string) *Doc {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	lines := strings.Split(text, "\n")
-	// Файл, оканчивающийся на '\n', даёт лишнюю пустую строку в конце.
+	// A file ending in '\n' produces an extra empty line at the end.
 	if n := len(lines); n > 1 && lines[n-1] == "" {
 		lines = lines[:n-1]
 	}
@@ -76,7 +76,7 @@ func Parse(absPath, relPath, text string) *Doc {
 			continue
 		}
 		if m := headingRe.FindStringSubmatch(line); m != nil {
-			// Закрываем предыдущую секцию.
+			// Close the previous section.
 			if n := len(d.Sections); n > 0 {
 				d.Sections[n-1].EndLine = i
 			}
@@ -102,7 +102,7 @@ func Parse(absPath, relPath, text string) *Doc {
 	return d
 }
 
-// InCode сообщает, лежит ли строка (1-based) внутри fenced-блока кода.
+// InCode reports whether a line (1-based) lies inside a fenced code block.
 func (d *Doc) InCode(line int) bool {
 	if line < 1 || line > len(d.inCode) {
 		return false
@@ -110,19 +110,19 @@ func (d *Doc) InCode(line int) bool {
 	return d.inCode[line-1]
 }
 
-// IsDisabled — выключено ли правило для данной строки комментарием.
+// IsDisabled reports whether a comment disables the rule for the given line.
 func (d *Doc) IsDisabled(ruleID string, line int) bool {
 	return d.disabledFile[ruleID] || d.disabledLine[line][ruleID]
 }
 
-// IsHeading — является ли строка заголовком (вне блока кода).
+// IsHeading reports whether the line is a heading (outside a code block).
 func (d *Doc) IsHeading(line int) bool {
 	return !d.InCode(line) && line >= 1 && line <= len(d.Lines) && headingRe.MatchString(d.Lines[line-1])
 }
 
 var inlineCodeRe = regexp.MustCompile("`([^`]+)`")
 
-// InlineCode возвращает фрагменты `в обратных кавычках` строки.
+// InlineCode returns the `backquoted` fragments of a line.
 func InlineCode(line string) []string {
 	var out []string
 	for _, m := range inlineCodeRe.FindAllStringSubmatch(line, -1) {
@@ -131,7 +131,7 @@ func InlineCode(line string) []string {
 	return out
 }
 
-// StripInlineCode заменяет `код` пробелами (длина строки сохраняется).
+// StripInlineCode replaces `code` with spaces (the line length is preserved).
 func StripInlineCode(line string) string {
 	return inlineCodeRe.ReplaceAllStringFunc(line, func(s string) string {
 		return strings.Repeat(" ", len(s))
@@ -140,7 +140,7 @@ func StripInlineCode(line string) string {
 
 var listMarkerRe = regexp.MustCompile(`^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?`)
 
-// StripListMarker убирает «- », «1. », «- [ ] » в начале строки.
+// StripListMarker removes "- ", "1. ", "- [ ] " at the start of a line.
 func StripListMarker(line string) string {
 	return listMarkerRe.ReplaceAllString(line, "")
 }

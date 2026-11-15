@@ -21,7 +21,7 @@ func TestLoadDefaultsAndTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := WriteTemplate(dir, false); err == nil {
-		t.Fatal("повторный init без --force должен падать")
+		t.Fatal("a second init without --force must fail")
 	}
 	if _, err := WriteTemplate(dir, true); err != nil {
 		t.Fatal(err)
@@ -66,12 +66,12 @@ func TestLoadInvalid(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, FileName), []byte("[lint\nbroken"), 0o644)
 	if _, err := Load(dir); err == nil {
-		t.Fatal("ожидалась ошибка")
+		t.Fatal("expected an error")
 	}
 	if _, err := LoadGuard(dir); err == nil {
-		t.Fatal("ожидалась ошибка")
+		t.Fatal("expected an error")
 	}
-	g, err := LoadGuard(t.TempDir()) // нет файла — не ошибка
+	g, err := LoadGuard(t.TempDir()) // no file is not an error
 	if err != nil || g.MaxDeletes != DefaultMaxDeletes {
 		t.Fatalf("%+v %v", g, err)
 	}
@@ -86,7 +86,7 @@ func TestWriteSynced(t *testing.T) {
 		{Kind: KindDenyPath, Pattern: "migrations/**", Source: "CLAUDE.md:3", Origin: "explicit"},
 		{Kind: KindAskCommand, Pattern: `say "hi"\now`, Source: "CLAUDE.md:4", Origin: "heuristic"},
 	}
-	for i := 0; i < 2; i++ { // повторный sync заменяет секцию, а не дублирует
+	for i := 0; i < 2; i++ { // a repeated sync replaces the section instead of duplicating it
 		if err := WriteSynced(dir, rules); err != nil {
 			t.Fatal(err)
 		}
@@ -94,7 +94,7 @@ func TestWriteSynced(t *testing.T) {
 	data, _ := os.ReadFile(filepath.Join(dir, FileName))
 	text := string(data)
 	if !strings.Contains(text, "# my comment") || strings.Count(text, "[[guard.synced.rules]]") != 2 {
-		t.Fatalf("файл:\n%s", text)
+		t.Fatalf("file:\n%s", text)
 	}
 	cfg, err := Load(dir)
 	if err != nil {
@@ -104,13 +104,13 @@ func TestWriteSynced(t *testing.T) {
 		t.Fatalf("%+v", cfg.Guard.Synced)
 	}
 
-	// Пустой список удаляет секцию.
+	// An empty list removes the section.
 	if err := WriteSynced(dir, nil); err != nil {
 		t.Fatal(err)
 	}
 	cfg, _ = Load(dir)
 	if len(cfg.Guard.Synced.Rules) != 0 {
-		t.Fatal("секция должна исчезнуть")
+		t.Fatal("the section must disappear")
 	}
 }
 
@@ -157,10 +157,10 @@ func TestGuardModes(t *testing.T) {
 	}
 	write("[guard]\nmode = \"yolo\"\n")
 	if _, err := LoadGuard(dir); err == nil {
-		t.Fatal("неизвестный режим должен давать ошибку")
+		t.Fatal("an unknown mode must produce an error")
 	}
 	if _, err := Load(dir); err == nil {
-		t.Fatal("неизвестный режим должен давать ошибку")
+		t.Fatal("an unknown mode must produce an error")
 	}
 	g, _ = LoadGuard(t.TempDir())
 	if g.Strict() || g.Mode != ModeAutonomous || len(g.ProtectedBranches) != 2 {

@@ -6,18 +6,18 @@ import (
 	"strings"
 )
 
-// Куда уйдёт `git push` без явной ветки, решает конфигурация git:
-// remote.<имя>.push, push.default, upstream (branch.<ветка>.merge),
-// remote.<имя>.mirror. Запуск `git config` занял бы 5–20 мс, поэтому
-// читаем файлы сами.
+// Where a `git push` without an explicit branch goes is decided by the git
+// configuration: remote.<name>.push, push.default, the upstream
+// (branch.<branch>.merge), remote.<name>.mirror. Running `git config` would
+// take 5–20 ms, so we read the files ourselves.
 //
-// Значения собираются из всех файлов сразу (глобальный, репозитория,
-// worktree, а также include и includeIf — независимо от условия). Это
-// осторожнее, чем делает git: если хоть где-то задано рискованное
-// значение, хук его учтёт. Системный gitconfig не читается.
+// Values are collected from all files at once (global, repository, worktree,
+// plus include and includeIf regardless of the condition). That is more
+// cautious than git itself: if a risky value is set anywhere at all, the hook
+// takes it into account. The system gitconfig is not read.
 
-// gitConfig — значения ключей: секция и имя ключа в нижнем регистре,
-// подсекция как есть ("remote.origin.push", "branch.Feature.merge").
+// gitConfig is the key values: section and key name in lower case, the
+// subsection as is ("remote.origin.push", "branch.Feature.merge").
 type gitConfig map[string][]string
 
 func readGitConfig(repo, home string) gitConfig {
@@ -39,7 +39,7 @@ func (c gitConfig) add(key, value string) {
 	c[key] = append(c[key], value)
 }
 
-// isTrue — хоть одно значение ключа означает «да».
+// isTrue reports whether at least one value of the key means "yes".
 func (c gitConfig) isTrue(key string) bool {
 	for _, v := range c[key] {
 		switch strings.ToLower(v) {
@@ -50,11 +50,11 @@ func (c gitConfig) isTrue(key string) bool {
 	return false
 }
 
-// readFile разбирает файл в формате git config: [секция "подсекция"],
-// строки ключ = значение, комментарии # и ;.
+// readFile parses a file in git config format: [section "subsection"],
+// key = value lines, # and ; comments.
 func (c gitConfig) readFile(path, home string, depth int) {
 	if depth > 10 {
-		return // include по кругу
+		return // circular include
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -69,14 +69,14 @@ func (c gitConfig) readFile(path, home string, depth int) {
 				continue
 			}
 			section = parseSection(line[1:end])
-			line = strings.TrimSpace(line[end+1:]) // [push] default = x — в одной строке
+			line = strings.TrimSpace(line[end+1:]) // [push] default = x on a single line
 		}
 		if line == "" || line[0] == '#' || line[0] == ';' || section == "" {
 			continue
 		}
 		name, raw, hasValue := strings.Cut(line, "=")
 		name = strings.ToLower(strings.TrimSpace(name))
-		value := "true" // ключ без «=» — логическое «да»
+		value := "true" // a key without "=" is a boolean "yes"
 		if hasValue {
 			value = configValue(raw)
 		}
@@ -93,10 +93,10 @@ func parseSection(s string) string {
 	if name, sub, ok := strings.Cut(s, " "); ok {
 		return strings.ToLower(name) + "." + strings.Trim(strings.TrimSpace(sub), `"`)
 	}
-	return strings.ToLower(s) // старая форма [branch.main]
+	return strings.ToLower(s) // the old form [branch.main]
 }
 
-// configValue убирает кавычки, экранирование и комментарий в конце строки.
+// configValue removes quotes, escapes and a trailing comment.
 func configValue(s string) string {
 	var b strings.Builder
 	quoted := false
@@ -127,8 +127,8 @@ func includePath(value, from, home string) string {
 	return filepath.Join(filepath.Dir(from), value)
 }
 
-// normalizeKey приводит ключ из `git -c` к виду gitConfig:
-// Remote.origin.PUSH → remote.origin.push (подсекция сохраняет регистр).
+// normalizeKey brings a key from `git -c` to the gitConfig form:
+// Remote.origin.PUSH → remote.origin.push (the subsection keeps its case).
 func normalizeKey(key string) string {
 	first, last := strings.IndexByte(key, '.'), strings.LastIndexByte(key, '.')
 	if first < 0 || first == last {
@@ -137,8 +137,8 @@ func normalizeKey(key string) string {
 	return strings.ToLower(key[:first]) + key[first:last] + strings.ToLower(key[last:])
 }
 
-// addArgs добавляет значения `git -c key=value`. unknown — значение
-// вычисляется (переменная, --config-env) и заранее неизвестно.
+// addArgs adds `git -c key=value` values. unknown means a value is computed
+// (a variable, --config-env) and not known in advance.
 func (c gitConfig) addArgs(args []word, home string) (unknown bool) {
 	for _, w := range args {
 		if w.dynamic {
@@ -158,7 +158,7 @@ func (c gitConfig) addArgs(args []word, home string) (unknown bool) {
 	return unknown
 }
 
-// pushRemotes — куда уйдёт `git push` без имени remote.
+// pushRemotes is where a `git push` without a remote name goes.
 func (c gitConfig) pushRemotes(branch string) []string {
 	var out []string
 	for _, key := range []string{"branch." + branch + ".pushremote", "remote.pushdefault", "branch." + branch + ".remote"} {
@@ -167,7 +167,7 @@ func (c gitConfig) pushRemotes(branch string) []string {
 	return append(out, "origin")
 }
 
-// pushSpecs — refspec из remote.<имя>.push для этих remote.
+// pushSpecs is the refspecs from remote.<name>.push for these remotes.
 func (c gitConfig) pushSpecs(remotes []string) []string {
 	var out []string
 	for _, r := range remotes {

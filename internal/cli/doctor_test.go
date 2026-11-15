@@ -12,11 +12,11 @@ import (
 	"github.com/roma2246/holdfast/internal/guard"
 )
 
-// newGitRepo — git-репозиторий с одним коммитом.
+// newGitRepo is a git repository with one commit.
 func newGitRepo(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git не установлен")
+		t.Skip("git is not installed")
 	}
 	dir := t.TempDir()
 	for _, args := range [][]string{
@@ -32,7 +32,7 @@ func newGitRepo(t *testing.T) string {
 	return dir
 }
 
-// fakeBin — исполняемый файл, который будет «бинарником holdfast» для хуков.
+// fakeBin is an executable file that serves as the "holdfast binary" for the hooks.
 func fakeBin(t *testing.T) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "holdfast")
@@ -45,19 +45,19 @@ func fakeBin(t *testing.T) string {
 func TestDoctor(t *testing.T) {
 	dir := newGitRepo(t)
 
-	// Ничего не установлено: хуков и точек нет — код 2 и подсказки.
+	// Nothing is installed: no hooks and no restore points, so exit code 2 and hints.
 	code, out, _ := run(t, "", "-C", dir, "doctor")
 	if code != ExitFailure {
-		t.Fatalf("код %d:\n%s", code, out)
+		t.Fatalf("exit code %d:\n%s", code, out)
 	}
 	for _, want := range []string{"✓ git is installed", "✗ Claude Code hooks", "holdfast guard install",
 		"✓ holdfast.toml is readable", "✗ restore points", "holdfast guard start", "Problems:"} {
 		if !strings.Contains(out, want) {
-			t.Fatalf("нет %q:\n%s", want, out)
+			t.Fatalf("missing %q:\n%s", want, out)
 		}
 	}
 
-	// Хуки с явным путём к бинарнику и одна точка — всё в порядке.
+	// Hooks with an explicit path to the binary and one restore point: all good.
 	bin := fakeBin(t)
 	if code, _, errOut := run(t, "", "-C", dir, "guard", "install", "--bin", bin); code != 0 {
 		t.Fatal(errOut)
@@ -68,10 +68,10 @@ func TestDoctor(t *testing.T) {
 	code, out, _ = run(t, "", "-C", dir, "doctor")
 	if code != 0 || strings.Contains(out, "✗") || !strings.Contains(out, "All good") ||
 		!strings.Contains(out, "binary for the hooks: "+bin) || !strings.Contains(out, "1, the latest") {
-		t.Fatalf("код %d:\n%s", code, out)
+		t.Fatalf("exit code %d:\n%s", code, out)
 	}
 
-	// Бинарник пропал.
+	// The binary is gone.
 	os.Remove(bin)
 	if code, out, _ := run(t, "", "-C", dir, "doctor"); code != ExitFailure || !strings.Contains(out, bin+" does not exist") {
 		t.Fatalf("%d\n%s", code, out)
@@ -83,7 +83,7 @@ func TestDoctor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Битый holdfast.toml и свежая config-error в журнале.
+	// A broken holdfast.toml and a recent config-error in the log.
 	toml := filepath.Join(dir, "holdfast.toml")
 	os.WriteFile(toml, []byte("[guard\n"), 0o644)
 	past := time.Now().Add(-time.Hour)
@@ -95,7 +95,7 @@ func TestDoctor(t *testing.T) {
 		!strings.Contains(out, "✗ no recent config-error entries in the log — 1 since the last change") {
 		t.Fatalf("%d\n%s", code, out)
 	}
-	// Конфиг исправлен (файл изменён позже ошибки) — ошибка в журнале уже не свежая.
+	// The config is fixed (the file changed after the error), so the logged error is no longer recent.
 	os.WriteFile(toml, []byte("[guard]\n"), 0o644)
 	future := time.Now().Add(time.Minute)
 	os.Chtimes(toml, future, future)
@@ -103,7 +103,7 @@ func TestDoctor(t *testing.T) {
 		t.Fatalf("%d\n%s", code, out)
 	}
 
-	// Неудачная точка восстановления.
+	// A failed restore point.
 	guard.AppendLog(dir, guard.LogEntry{Time: time.Now().UTC(), Tool: "UserPromptSubmit", Decision: "snapshot", Rule: "error", Reason: "disk full"})
 	os.WriteFile(filepath.Join(dir, guard.StateDir, "checkpoint-error"), []byte("2026-11-15T10:00:00Z disk full\n"), 0o644)
 	code, out, _ = run(t, "", "-C", dir, "doctor")
@@ -117,23 +117,23 @@ func TestDoctor(t *testing.T) {
 }
 
 func TestDoctorBrokenSettingsAndNoGit(t *testing.T) {
-	dir := t.TempDir() // не git-репозиторий
+	dir := t.TempDir() // not a git repository
 	os.MkdirAll(filepath.Join(dir, ".claude"), 0o755)
 	os.WriteFile(filepath.Join(dir, ".claude", "settings.json"), []byte("{oops"), 0o644)
-	os.MkdirAll(filepath.Join(dir, guard.StateDir, "log.jsonl"), 0o755) // журнал не читается
+	os.MkdirAll(filepath.Join(dir, guard.StateDir, "log.jsonl"), 0o755) // the log can't be read
 	code, out, _ := run(t, "", "-C", dir, "doctor")
 	for _, want := range []string{"invalid JSON", "✗ the log", "the directory is not in a git repository", "git init"} {
 		if code != ExitFailure || !strings.Contains(out, want) {
-			t.Fatalf("нет %q (код %d):\n%s", want, code, out)
+			t.Fatalf("missing %q (exit code %d):\n%s", want, code, out)
 		}
 	}
 
-	// git не найден: проверка точек тоже честно не проходит.
+	// git not found: the restore-point check honestly fails too.
 	t.Setenv("PATH", t.TempDir())
 	_, out, _ = run(t, "", "-C", dir, "doctor")
 	for _, want := range []string{"✗ git is installed", "there are no restore points without git", "holdfast not found in PATH", "guard install --bin"} {
 		if !strings.Contains(out, want) {
-			t.Fatalf("нет %q:\n%s", want, out)
+			t.Fatalf("missing %q:\n%s", want, out)
 		}
 	}
 }
@@ -145,7 +145,7 @@ func TestResolveBin(t *testing.T) {
 	os.WriteFile(filepath.Join(root, "bin", "plain"), []byte("x"), 0o644)
 	tests := []struct {
 		bin  string
-		want string // подстрока результата или ошибки
+		want string // a substring of the result or of the error
 		ok   bool
 	}{
 		{"./bin/holdfast", filepath.Join(root, "bin", "holdfast"), true},
@@ -193,33 +193,33 @@ func TestGuardUninstall(t *testing.T) {
 		t.Fatal(out)
 	}
 
-	// --purge: отказ — ничего не удалено.
+	// --purge: declined, so nothing is deleted.
 	run(t, "", "-C", dir, "guard", "start")
 	_, out, _ = run(t, "n\n", "-C", dir, "guard", "uninstall", "--local", "--purge")
 	if !strings.Contains(out, "Cancelled") || !strings.Contains(out, "restore points and backups: 1") || strings.Contains(out, "remain") {
 		t.Fatal(out)
 	}
 	if _, err := os.Stat(filepath.Join(dir, guard.StateDir)); err != nil {
-		t.Fatal(".holdfast удалён без подтверждения")
+		t.Fatal(".holdfast was deleted without confirmation")
 	}
-	// Подтверждение — удалены журнал и ссылки.
+	// Confirmed: the log and the refs are deleted.
 	code, out, _ = run(t, "да\n", "-C", dir, "guard", "uninstall", "--purge")
 	if code != 0 || !strings.Contains(out, "Deleted the log and all Holdfast refs (1)") {
 		t.Fatalf("%d\n%s", code, out)
 	}
 	if _, err := os.Stat(filepath.Join(dir, guard.StateDir)); err == nil {
-		t.Fatal(".holdfast не удалён")
+		t.Fatal(".holdfast was not deleted")
 	}
 	if g, _ := guard.OpenGit(dir); g != nil {
 		if refs, _ := g.AllRefs(); len(refs) != 0 {
-			t.Fatalf("остались ссылки %v", refs)
+			t.Fatalf("refs remain: %v", refs)
 		}
 	}
 	if _, out, _ := run(t, "", "-C", dir, "guard", "uninstall", "--purge", "--yes"); !strings.Contains(out, "nothing to delete") {
 		t.Fatal(out)
 	}
 
-	// Не git-репозиторий: --purge удаляет только .holdfast/.
+	// Not a git repository: --purge deletes only .holdfast/.
 	plain := t.TempDir()
 	run(t, "", "-C", plain, "guard", "install")
 	code, out, _ = run(t, "", "-C", plain, "guard", "uninstall", "--purge", "-y")

@@ -30,7 +30,7 @@ or a <!-- holdfast-disable HF003 --> comment in the file.`,
 			if listRules {
 				for _, r := range lint.Rules() {
 					desc := ""
-					if d, ok := r.(lint.Describer); ok { // проверка, реализует ли r интерфейс
+					if d, ok := r.(lint.Describer); ok { // checks whether r implements the interface
 						desc = d.Description()
 					}
 					fmt.Fprintf(a.out, "%s  %s\n", r.ID(), desc)

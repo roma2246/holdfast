@@ -12,20 +12,20 @@ import (
 	"github.com/roma2246/holdfast/internal/config"
 )
 
-// Подсказки «в момент действия»: когда агент читает или меняет файл,
-// хук добавляет в его контекст правила, которые касаются именно этого
-// файла — из [[guard.context]] в holdfast.toml и из строк CLAUDE.md /
-// AGENTS.md, где упомянут этот путь. Каждая подсказка показывается
-// один раз за сессию, чтобы не засорять контекст.
+// "Just in time" hints: when the agent reads or changes a file, the hook adds
+// to its context the rules that concern exactly that file, taken from
+// [[guard.context]] in holdfast.toml and from the lines of CLAUDE.md /
+// AGENTS.md that mention the path. Each hint is shown once per session so
+// that the context does not fill up with noise.
 
 const (
 	maxContextNotes = 5
 	maxNoteLen      = 400
 )
 
-// Note — одна подсказка для агента.
+// Note is one hint for the agent.
 type Note struct {
-	Source string // "holdfast.toml" или "CLAUDE.md:12"
+	Source string // "holdfast.toml" or "CLAUDE.md:12"
 	Text   string
 }
 
@@ -35,7 +35,7 @@ var (
 	ctxFenceRe = regexp.MustCompile("^\\s*(```|~~~)")
 )
 
-// ContextNotes возвращает подсказки для файлов, затронутых последней проверкой.
+// ContextNotes returns the hints for the files touched by the last check.
 func (p *Policy) ContextNotes() []Note {
 	var rels []string
 	for _, abs := range p.touched {
@@ -82,7 +82,7 @@ type instrLine struct {
 	paths []string
 }
 
-// instructionLines — строки файла инструкций, в которых упомянуты пути.
+// instructionLines is the lines of an instructions file that mention paths.
 func instructionLines(path string) []instrLine {
 	f, err := os.Open(path)
 	if err != nil {
@@ -137,7 +137,7 @@ func normPattern(s string) string {
 	return s
 }
 
-// FormatNotes превращает подсказки в текст для additionalContext.
+// FormatNotes turns hints into text for additionalContext.
 func FormatNotes(notes []Note) string {
 	if len(notes) == 0 {
 		return ""
@@ -152,8 +152,8 @@ func FormatNotes(notes []Note) string {
 
 var unsafeSessionRe = regexp.MustCompile(`[^A-Za-z0-9_-]`)
 
-// FilterSeen убирает подсказки, уже показанные в этой сессии, и запоминает
-// новые в .holdfast/seen/<session>. Без session_id ничего не фильтрует.
+// FilterSeen drops the hints already shown in this session and remembers the
+// new ones in .holdfast/seen/<session>. Without a session_id it filters nothing.
 func FilterSeen(root, session string, notes []Note) []Note {
 	session = unsafeSessionRe.ReplaceAllString(session, "")
 	if session == "" || len(notes) == 0 {
@@ -173,7 +173,7 @@ func FilterSeen(root, session string, notes []Note) []Note {
 	var fresh []Note
 	var keys []string
 	for _, n := range notes {
-		h := fnv.New64a() // быстрый некриптографический хэш
+		h := fnv.New64a() // a fast non-cryptographic hash
 		h.Write([]byte(n.Source + "\x00" + n.Text))
 		k := fmt.Sprintf("%x", h.Sum64())
 		if !seen[k] {

@@ -1,5 +1,5 @@
-# Окружение для записи демо-гифки: VHS + git + jq + свежий holdfast.
-# Собирается и запускается скриптом docs/demo/record.sh.
+# Environment for recording the demo GIF: VHS + git + jq + a fresh holdfast.
+# Built and run by the script docs/demo/record.sh.
 FROM ghcr.io/charmbracelet/vhs:v0.12.1
 
 RUN apt-get update \

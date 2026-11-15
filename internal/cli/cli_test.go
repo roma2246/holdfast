@@ -16,7 +16,7 @@ import (
 
 const fixtures = "../../testdata/lint"
 
-// run запускает CLI как из терминала и возвращает код и вывод.
+// run runs the CLI as if from a terminal and returns the exit code and the output.
 func run(t *testing.T, stdin string, args ...string) (int, string, string) {
 	t.Helper()
 	var out, errOut bytes.Buffer
@@ -24,7 +24,7 @@ func run(t *testing.T, stdin string, args ...string) (int, string, string) {
 	return code, out.String(), errOut.String()
 }
 
-// copyDir копирует фикстуру во временную папку (тесты не портят testdata).
+// copyDir copies a fixture into a temp directory (tests don't spoil testdata).
 func copyDir(t *testing.T, src string) string {
 	t.Helper()
 	dst := t.TempDir()
@@ -58,7 +58,7 @@ func TestHelpAndVersion(t *testing.T) {
 		t.Fatalf("%d %s", code, out)
 	}
 	if code, _, errOut := run(t, "", "nope"); code != ExitFailure || errOut == "" {
-		t.Fatalf("неизвестная команда: %d %q", code, errOut)
+		t.Fatalf("unknown command: %d %q", code, errOut)
 	}
 }
 
@@ -68,19 +68,19 @@ func TestLintExitCodes(t *testing.T) {
 		args []string
 		want int
 	}{
-		{"ошибки → 1", []string{"lint", filepath.Join(fixtures, "HF002", "bad")}, ExitFindings},
-		{"чисто → 0", []string{"lint", filepath.Join(fixtures, "HF008", "good")}, ExitOK},
+		{"errors → 1", []string{"lint", filepath.Join(fixtures, "HF002", "bad")}, ExitFindings},
+		{"clean → 0", []string{"lint", filepath.Join(fixtures, "HF008", "good")}, ExitOK},
 		{"warning → 0", []string{"lint", filepath.Join(fixtures, "HF005", "bad")}, ExitOK},
 		{"warning + --strict → 1", []string{"lint", "--strict", filepath.Join(fixtures, "HF005", "bad")}, ExitFindings},
-		{"один файл", []string{"lint", filepath.Join(fixtures, "HF006", "bad", "CLAUDE.md")}, ExitFindings},
-		{"нет пути → 2", []string{"lint", "/nonexistent/path"}, ExitFailure},
-		{"плохой формат → 2", []string{"lint", "--format", "xml", fixtures}, ExitFailure},
-		{"через -C", []string{"-C", filepath.Join(fixtures, "HF002", "bad"), "lint"}, ExitFindings},
+		{"single file", []string{"lint", filepath.Join(fixtures, "HF006", "bad", "CLAUDE.md")}, ExitFindings},
+		{"missing path → 2", []string{"lint", "/nonexistent/path"}, ExitFailure},
+		{"bad format → 2", []string{"lint", "--format", "xml", fixtures}, ExitFailure},
+		{"via -C", []string{"-C", filepath.Join(fixtures, "HF002", "bad"), "lint"}, ExitFindings},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if code, out, errOut := run(t, "", tt.args...); code != tt.want {
-				t.Fatalf("код %d, ожидался %d\n%s%s", code, tt.want, out, errOut)
+				t.Fatalf("exit code %d, want %d\n%s%s", code, tt.want, out, errOut)
 			}
 		})
 	}
@@ -88,12 +88,12 @@ func TestLintExitCodes(t *testing.T) {
 
 func TestLintHumanOutput(t *testing.T) {
 	_, out, _ := run(t, "", "lint", filepath.Join(fixtures, "HF002", "bad"))
-	// Формат строки из ТЗ: CLAUDE.md:14  HF002 error  «npm run e2e» — ...
+	// Line format: CLAUDE.md:14  HF002 error  "npm run e2e": ...
 	if !strings.Contains(out, "CLAUDE.md:5  HF002 error    \"npm run e2e\": script e2e is not in package.json") {
-		t.Fatalf("вывод:\n%s", out)
+		t.Fatalf("output:\n%s", out)
 	}
 	if !strings.Contains(out, "errors: 3") {
-		t.Fatalf("нет сводки:\n%s", out)
+		t.Fatalf("no summary:\n%s", out)
 	}
 	_, out, _ = run(t, "", "lint", filepath.Join(fixtures, "HF008", "good"))
 	if !strings.Contains(out, "no problems found") {
@@ -112,7 +112,7 @@ func TestLintHumanOutput(t *testing.T) {
 func TestLintJSON(t *testing.T) {
 	code, out, _ := run(t, "", "lint", "--format", "json", filepath.Join(fixtures, "all"))
 	if code != ExitFindings {
-		t.Fatalf("код %d", code)
+		t.Fatalf("exit code %d", code)
 	}
 	var report struct {
 		Findings []struct {
@@ -151,22 +151,22 @@ deny-paths: secrets/**
 		t.Fatalf("init: %d %s", code, out)
 	}
 	if code, _, _ := run(t, "", "-C", dir, "init"); code != ExitFailure {
-		t.Fatal("повторный init должен падать")
+		t.Fatal("a second init must fail")
 	}
 
-	// До sync lint предупреждает HF009 (с --strict — код 1).
+	// Before sync, lint warns with HF009 (exit code 1 with --strict).
 	if code, out, _ := run(t, "", "lint", "--strict", dir); code != ExitFindings || !strings.Contains(out, "HF009") {
-		t.Fatalf("lint до sync: %d\n%s", code, out)
+		t.Fatalf("lint before sync: %d\n%s", code, out)
 	}
 
-	// --dry-run ничего не пишет.
+	// --dry-run writes nothing.
 	run(t, "", "-C", dir, "sync", "--dry-run")
 	cfg, _ := config.Load(dir)
 	if len(cfg.Guard.Synced.Rules) != 0 {
-		t.Fatal("dry-run изменил конфиг")
+		t.Fatal("dry-run changed the config")
 	}
 
-	// Подтверждаем первое эвристическое правило и отклоняем второе.
+	// Confirm the first heuristic rule and decline the second.
 	code, out, _ := run(t, "y\nn\n", "-C", dir, "sync")
 	if code != 0 || !strings.Contains(out, "Add to the policy?") {
 		t.Fatalf("sync: %d\n%s", code, out)
@@ -181,7 +181,7 @@ deny-paths: secrets/**
 		t.Fatalf("synced:\n%s\nwant\n%s", strings.Join(got, "|"), want)
 	}
 
-	// Повторный sync помнит подтверждённое правило; --yes принимает остальное.
+	// A repeated sync remembers the confirmed rule; --yes accepts the rest.
 	if code, _, _ := run(t, "", "-C", dir, "sync", "--yes"); code != 0 {
 		t.Fatal(code)
 	}
@@ -189,11 +189,11 @@ deny-paths: secrets/**
 	if len(cfg.Guard.Synced.Rules) != 3 {
 		t.Fatalf("%+v", cfg.Guard.Synced.Rules)
 	}
-	// После sync предупреждений HF009 нет.
+	// After sync there are no HF009 warnings.
 	if _, out, _ := run(t, "", "lint", dir); strings.Contains(out, "HF009") {
-		t.Fatalf("HF009 после sync:\n%s", out)
+		t.Fatalf("HF009 after sync:\n%s", out)
 	}
-	// --no-heuristics оставляет только явный блок.
+	// --no-heuristics keeps only the explicit block.
 	run(t, "", "-C", dir, "sync", "--no-heuristics")
 	cfg, _ = config.Load(dir)
 	if len(cfg.Guard.Synced.Rules) != 1 {
@@ -220,12 +220,12 @@ func TestGuardInstallCheckLog(t *testing.T) {
 		t.Fatal(out)
 	}
 
-	t.Setenv("CLAUDE_PROJECT_DIR", dir) // t.Setenv восстановит переменную после теста
+	t.Setenv("CLAUDE_PROJECT_DIR", dir) // t.Setenv restores the variable after the test
 	for _, cmd := range []string{"rm -rf ~", "ls", "git push"} {
 		in, _ := json.Marshal(map[string]any{"tool_name": "Bash", "cwd": dir, "tool_input": map[string]string{"command": cmd}})
 		code, out, _ := run(t, string(in), "guard", "check")
 		if code != 0 {
-			t.Fatalf("check %q: код %d", cmd, code)
+			t.Fatalf("check %q: exit code %d", cmd, code)
 		}
 		if cmd == "rm -rf ~" && !strings.Contains(out, `"deny"`) {
 			t.Fatalf("check %q: %s", cmd, out)
@@ -235,17 +235,17 @@ func TestGuardInstallCheckLog(t *testing.T) {
 	_, out, _ = run(t, "", "-C", dir, "guard", "log")
 	for _, want := range []string{"deny", "rm-home", "allow", "git push", "RULE"} {
 		if !strings.Contains(out, want) {
-			t.Fatalf("в журнале нет %q:\n%s", want, out)
+			t.Fatalf("the log has no %q:\n%s", want, out)
 		}
 	}
-	// Подсказка из CLAUDE.md видна в журнале.
+	// The hint from CLAUDE.md is visible in the log.
 	os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("- Never edit `db/` by hand.\n"), 0o644)
 	in, _ := json.Marshal(map[string]any{"tool_name": "Read", "cwd": dir, "tool_input": map[string]string{"file_path": filepath.Join(dir, "db", "x.sql")}})
 	if _, out, _ := run(t, string(in), "guard", "check"); !strings.Contains(out, "additionalContext") {
-		t.Fatalf("нет подсказки: %s", out)
+		t.Fatalf("no hint: %s", out)
 	}
 	if _, out, _ := run(t, "", "-C", dir, "guard", "log"); !strings.Contains(out, "hint: CLAUDE.md:1") {
-		t.Fatalf("подсказки нет в журнале:\n%s", out)
+		t.Fatalf("the hint is missing from the log:\n%s", out)
 	}
 	_, out, _ = run(t, "", "-C", dir, "guard", "log", "--decision", "allow", "--json")
 	if strings.Count(out, "\n") != 3 || !strings.Contains(out, `"ls"`) || !strings.Contains(out, `"context":["CLAUDE.md:1"]`) {
@@ -259,7 +259,7 @@ func TestGuardInstallCheckLog(t *testing.T) {
 
 func TestGuardSnapshotCommands(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git не установлен")
+		t.Skip("git is not installed")
 	}
 	dir := t.TempDir()
 	gitCmd := func(args ...string) {
@@ -275,7 +275,7 @@ func TestGuardSnapshotCommands(t *testing.T) {
 	gitCmd("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
 
 	if code, _, errOut := run(t, "", "-C", dir, "guard", "diff"); code != ExitFailure || !strings.Contains(errOut, "guard start") {
-		t.Fatalf("diff без снапшота: %d %s", code, errOut)
+		t.Fatalf("diff without a snapshot: %d %s", code, errOut)
 	}
 	if code, out, _ := run(t, "", "-C", dir, "guard", "start"); code != 0 || !strings.Contains(out, "Snapshot") {
 		t.Fatalf("start: %d %s", code, out)
@@ -296,12 +296,12 @@ func TestGuardSnapshotCommands(t *testing.T) {
 	if _, out, _ := run(t, "", "-C", dir, "guard", "diff", "--stat"); !strings.Contains(out, "2 files changed") {
 		t.Fatal(out)
 	}
-	// Отказ в подтверждении — ничего не меняется.
+	// Declining the confirmation changes nothing.
 	if _, out, _ := run(t, "n\n", "-C", dir, "guard", "rollback"); !strings.Contains(out, "Cancelled") {
 		t.Fatal(out)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "junk.txt")); err != nil {
-		t.Fatal("после отказа файл должен остаться")
+		t.Fatal("the file must stay after declining")
 	}
 	code, out, _ := run(t, "y\n", "-C", dir, "guard", "rollback")
 	if code != 0 || !strings.Contains(out, "1 restored, 1 deleted") {
@@ -312,15 +312,15 @@ func TestGuardSnapshotCommands(t *testing.T) {
 		t.Fatalf("main.go = %q", data)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "junk.txt")); !os.IsNotExist(err) {
-		t.Fatal("junk.txt должен быть удалён")
+		t.Fatal("junk.txt must be deleted")
 	}
-	// Точки восстановления: хук checkpoint ничего не печатает, list и --to.
-	// После отката дерево совпадает с ручным снимком — новая точка появится,
-	// только если что-то изменилось.
+	// Restore points: the checkpoint hook prints nothing; list and --to.
+	// After the rollback the tree matches the manual snapshot, so a new restore
+	// point appears only if something has changed.
 	os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("my edit before the prompt\n"), 0o644)
 	cp := `{"session_id":"s1","cwd":"` + dir + `","prompt":"break it and fix it"}`
 	if code, out, _ := run(t, cp, "guard", "checkpoint"); code != 0 || out != "" {
-		t.Fatalf("checkpoint должен молчать: %d %q", code, out)
+		t.Fatalf("checkpoint must stay silent: %d %q", code, out)
 	}
 	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main // v2\n"), 0o644)
 	if _, out, _ := run(t, "", "-C", dir, "guard", "list"); !strings.Contains(out, "before prompt \"break it and fix it\"") || !strings.Contains(out, "1 changed") {
@@ -333,13 +333,13 @@ func TestGuardSnapshotCommands(t *testing.T) {
 		t.Fatalf("rollback --to: %d\n%s", code, out)
 	}
 	if code, _, errOut := run(t, "", "-C", dir, "guard", "rollback", "--to", "99"); code != ExitFailure || !strings.Contains(errOut, "guard list") {
-		t.Fatalf("неверный номер: %d %s", code, errOut)
+		t.Fatalf("wrong number: %d %s", code, errOut)
 	}
 	if code, _, _ := run(t, "", "-C", dir, "guard", "rollback", "--yes", "--snapshot", "missing"); code != ExitFailure {
-		t.Fatal("неизвестный снапшот должен давать ошибку")
+		t.Fatal("an unknown snapshot must produce an error")
 	}
 	if code, _, _ := run(t, "", "-C", t.TempDir(), "guard", "start"); code != ExitFailure {
-		t.Fatal("start вне git должен падать")
+		t.Fatal("start outside git must fail")
 	}
 }
 
@@ -348,7 +348,7 @@ func TestGuardListEmptyAndHumanAgo(t *testing.T) {
 	c := exec.Command("git", "init", "-q")
 	c.Dir = dir
 	if err := c.Run(); err != nil {
-		t.Skip("git недоступен")
+		t.Skip("git is not available")
 	}
 	if _, out, _ := run(t, "", "-C", dir, "guard", "list"); !strings.Contains(out, "No restore points yet") {
 		t.Fatal(out)
@@ -374,16 +374,16 @@ func TestTruncate(t *testing.T) {
 
 func TestLogColumnWidths(t *testing.T) {
 	if tw, ww := logColumnWidths(0); tw != 48 || ww != 60 {
-		t.Errorf("без терминала: %d %d", tw, ww)
+		t.Errorf("without a terminal: %d %d", tw, ww)
 	}
 	for _, width := range []int{80, 120, 200} {
 		tw, ww := logColumnWidths(width)
 		if total := 14 + 7 + 12 + 5*2 + 6 + tw + ww; total > width {
-			t.Errorf("ширина %d: таблица %d не помещается", width, total)
+			t.Errorf("width %d: the table (%d) does not fit", width, total)
 		}
 	}
 	if tw, ww := logColumnWidths(30); tw+ww != 24 {
-		t.Errorf("узкий терминал: минимум 24, получено %d", tw+ww)
+		t.Errorf("narrow terminal: minimum 24, got %d", tw+ww)
 	}
 	if got := relTarget("/repo", "/repo/src/a.go"); got != "src/a.go" {
 		t.Error(got)

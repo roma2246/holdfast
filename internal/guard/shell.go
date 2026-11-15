@@ -10,32 +10,32 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
-// maxDepth — сколько уровней bash -c "bash -c '...'" мы разбираем.
+// maxDepth is how many levels of bash -c "bash -c '...'" we parse.
 const maxDepth = 5
 
-// CheckCommand разбирает shell-команду в AST и проверяет каждую простую
-// команду: цепочки (&&, ;, |), подстановки $(...), bash -c "...".
-// Поиск подстроки не используется: "echo 'rm -rf /'" — это безопасный echo.
+// CheckCommand parses a shell command into an AST and checks every simple
+// command: chains (&&, ;, |), substitutions $(...), bash -c "...".
+// No substring search is used: "echo 'rm -rf /'" is a harmless echo.
 //
-// `cd` внутри команды учитывается: после `cd ~` путь `projects` означает
-// ~/projects. Policy поэтому не потокобезопасна для CheckCommand.
+// A `cd` inside the command is tracked: after `cd ~` the path `projects`
+// means ~/projects. That makes Policy unsafe for concurrent CheckCommand calls.
 func (p *Policy) CheckCommand(src string) Verdict {
 	saved := p.Cwd
 	p.touched = nil
 	p.dirStack, p.dirFuncs = nil, nil
 	p.branches, p.gitConfigChanged, p.gitEnv = nil, false, false
-	p.dirCache = nil // команда может создать ссылку — не верим старому кэшу
+	p.dirCache = nil // the command may create a symlink, so the old cache can't be trusted
 	defer func() { p.Cwd, p.cwdUnknown = saved, false }()
 	return p.checkScript(src, 0)
 }
 
-// dirEntry — папка в стеке pushd.
+// dirEntry is a directory on the pushd stack.
 type dirEntry struct {
 	dir     string
 	unknown bool
 }
 
-// trackCd обновляет текущую папку после cd, pushd и popd.
+// trackCd updates the current directory after cd, pushd and popd.
 func (p *Policy) trackCd(name string, args []word) {
 	switch name {
 	case "popd":
@@ -60,12 +60,12 @@ func (p *Policy) trackCd(name string, args []word) {
 	}
 }
 
-// isolated выполняет f в копии контекста shell: cd внутри f не меняет
-// папку для следующих команд. Так ведут себя ( … ), $( … ), конвейер,
-// фоновая команда и дочерний shell (bash -c).
+// isolated runs f in a copy of the shell context: a cd inside f does not
+// change the directory for the commands that follow. This is how ( … ),
+// $( … ), a pipeline, a background command and a child shell (bash -c) behave.
 func (p *Policy) isolated(f func()) {
 	cwd, unknown := p.Cwd, p.cwdUnknown
-	stack := slices.Clone(p.dirStack) // копия: f может дописать в общий массив
+	stack := slices.Clone(p.dirStack) // a copy: f may append into the shared backing array
 	f()
 	p.Cwd, p.cwdUnknown, p.dirStack = cwd, unknown, stack
 }
@@ -82,9 +82,9 @@ func (p *Policy) checkScript(src string, depth int) Verdict {
 	return p.checkNode(file, depth)
 }
 
-// checkNode обходит дерево команд по порядку выполнения. Части, которые
-// shell выполняет в отдельном процессе, проверяются в копии контекста
-// (isolated): их cd не влияет на команды после них.
+// checkNode walks the command tree in execution order. Parts that the shell
+// runs in a separate process are checked in a copy of the context
+// (isolated): their cd does not affect the commands after them.
 func (p *Policy) checkNode(node syntax.Node, depth int) Verdict {
 	v := allowVerdict
 	child := func(nodes ...syntax.Node) {
@@ -94,14 +94,14 @@ func (p *Policy) checkNode(node syntax.Node, depth int) Verdict {
 			}
 		})
 	}
-	// syntax.Walk обходит всё дерево, включая $(...), <(...), тела
-	// функций, циклов и условий. Функция возвращает true — «идти глубже»,
-	// false — «это поддерево мы уже проверили сами».
+	// syntax.Walk visits the whole tree, including $(...), <(...) and the
+	// bodies of functions, loops and conditionals. The callback returns true
+	// for "go deeper" and false for "we have already checked this subtree".
 	syntax.Walk(node, func(node syntax.Node) bool {
 		switch n := node.(type) {
 		case *syntax.Stmt:
 			if n.Background || n.Coprocess {
-				inner := *n // копия без флага «&», иначе попадём сюда снова
+				inner := *n // a copy without the "&" flag, otherwise we would land here again
 				inner.Background, inner.Coprocess = false, false
 				child(&inner)
 				return false
@@ -116,8 +116,8 @@ func (p *Policy) checkNode(node syntax.Node, depth int) Verdict {
 			child(stmtNodes(n.Stmts)...)
 			return false
 		case *syntax.FuncDecl:
-			// Тело функции проверяем, но выполнится оно только при вызове.
-			// Если в нём есть cd, вызов функции делает папку неизвестной.
+			// The function body is checked, but it only runs when called.
+			// If it contains a cd, calling the function makes the directory unknown.
 			child(n.Body)
 			if changesDir(n.Body) && n.Name != nil {
 				if p.dirFuncs == nil {
@@ -131,7 +131,7 @@ func (p *Policy) checkNode(node syntax.Node, depth int) Verdict {
 		case *syntax.BinaryCmd:
 			if n.Op == syntax.Pipe || n.Op == syntax.PipeAll {
 				v = worst(v, p.checkPipe(n))
-				// В bash каждая часть конвейера — отдельный процесс.
+				// In bash every part of a pipeline is a separate process.
 				for _, s := range pipeline(n) {
 					child(s)
 				}
@@ -153,7 +153,7 @@ func stmtNodes(stmts []*syntax.Stmt) []syntax.Node {
 	return out
 }
 
-// changesDir — есть ли в теле функции cd, pushd или popd.
+// changesDir reports whether a function body contains cd, pushd or popd.
 func changesDir(body syntax.Node) bool {
 	found := false
 	syntax.Walk(body, func(node syntax.Node) bool {
@@ -168,7 +168,7 @@ func changesDir(body syntax.Node) bool {
 	return found
 }
 
-// pipeline раскладывает конвейер a | b | c на отдельные команды.
+// pipeline flattens the pipeline a | b | c into separate commands.
 func pipeline(b *syntax.BinaryCmd) []*syntax.Stmt {
 	var stmts []*syntax.Stmt
 	var flatten func(s *syntax.Stmt)
@@ -185,8 +185,8 @@ func pipeline(b *syntax.BinaryCmd) []*syntax.Stmt {
 	return stmts
 }
 
-// gitEnvVars — переменные окружения, которые меняют репозиторий или
-// конфигурацию git: с ними назначение push не определить по файлам.
+// isGitEnvVar reports environment variables that change the repository or
+// the git configuration: with them the push destination can't be read from files.
 func isGitEnvVar(name string) bool {
 	switch name {
 	case "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_NAMESPACE":
@@ -195,9 +195,9 @@ func isGitEnvVar(name string) bool {
 	return strings.HasPrefix(name, "GIT_CONFIG")
 }
 
-// scanGitEnv отмечает, что в команде задаются переменные GIT_DIR,
-// GIT_CONFIG_* и т.п. — как присваивание (X=1 git …, export X=1) или
-// через env X=1 git ….
+// scanGitEnv records that the command sets GIT_DIR, GIT_CONFIG_* and the
+// like, either as an assignment (X=1 git …, export X=1) or through
+// env X=1 git ….
 func (p *Policy) scanGitEnv(file *syntax.File) {
 	syntax.Walk(file, func(node syntax.Node) bool {
 		switch n := node.(type) {
@@ -218,9 +218,9 @@ func (p *Policy) scanGitEnv(file *syntax.File) {
 	})
 }
 
-// parseShell разбирает команду как bash, а если не вышло — как zsh: на macOS
-// команды агента выполняет zsh, и агент пишет, например, ${(P)var}.
-// Поддержка zsh в mvdan.cc/sh экспериментальная, поэтому она — запасной путь.
+// parseShell parses the command as bash and, if that fails, as zsh: on macOS
+// the agent's commands run in zsh, and the agent writes things like ${(P)var}.
+// zsh support in mvdan.cc/sh is experimental, so it is only a fallback.
 func parseShell(src string) (*syntax.File, error) {
 	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(src), "")
 	if err == nil {
@@ -229,24 +229,24 @@ func parseShell(src string) (*syntax.File, error) {
 	if zfile, zerr := syntax.NewParser(syntax.Variant(syntax.LangZsh)).Parse(strings.NewReader(src), ""); zerr == nil {
 		return zfile, nil
 	}
-	return nil, err // показываем ошибку bash — она понятнее агенту
+	return nil, err // report the bash error: it is clearer to the agent
 }
 
-// word — аргумент команды после разбора кавычек.
+// word is a command argument after quote processing.
 type word struct {
-	s       string // значение; $VAR и $(...) остаются как текст
-	dynamic bool   // содержит переменные/подстановки — значение неизвестно
+	s       string // the value; $VAR and $(...) stay as text
+	dynamic bool   // contains variables/substitutions, so the value is unknown
 	node    *syntax.Word
 }
 
-// wordValue собирает значение слова из частей: 'a'"b"c → abc.
+// wordValue assembles a word's value from its parts: 'a'"b"c → abc.
 func wordValue(w *syntax.Word) word {
 	var b strings.Builder
 	dyn := false
 	var walk func(parts []syntax.WordPart, quoted bool)
 	walk = func(parts []syntax.WordPart, quoted bool) {
 		for _, part := range parts {
-			// «type switch»: проверяем конкретный тип значения интерфейса.
+			// A "type switch": checks the concrete type behind an interface value.
 			switch x := part.(type) {
 			case *syntax.Lit:
 				b.WriteString(unescape(x.Value, quoted))
@@ -256,7 +256,7 @@ func wordValue(w *syntax.Word) word {
 				walk(x.Parts, true)
 			case *syntax.ParamExp:
 				if x.Param != nil && x.Param.Value == "HOME" && x.Exp == nil && x.Slice == nil && x.Repl == nil {
-					b.WriteString("$HOME") // раскроем как домашнюю папку
+					b.WriteString("$HOME") // expanded later as the home directory
 				} else {
 					dyn = true
 					name := "VAR"
@@ -265,7 +265,7 @@ func wordValue(w *syntax.Word) word {
 					}
 					b.WriteString("$" + name)
 				}
-			default: // $(...), <(...), $((...)), {a,b} и т.п.
+			default: // $(...), <(...), $((...)), {a,b} and so on
 				dyn = true
 				b.WriteString("$(...)")
 			}
@@ -275,7 +275,7 @@ func wordValue(w *syntax.Word) word {
 	return word{s: b.String(), dynamic: dyn, node: w}
 }
 
-// unescape убирает обратные слэши: rm\ -rf → "rm -rf" как в shell.
+// unescape removes backslashes: rm\ -rf → "rm -rf", as the shell does.
 func unescape(s string, quoted bool) string {
 	if !strings.Contains(s, `\`) {
 		return s
@@ -307,15 +307,15 @@ var shells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true
 var interpreters = map[string]bool{"python": true, "python3": true, "perl": true, "ruby": true, "node": true}
 var downloaders = map[string]bool{"curl": true, "wget": true}
 
-// stripWrappers убирает sudo, env, nohup, time, timeout... и возвращает
-// «настоящую» команду. viaXargs=true, если аргументы придут из xargs.
+// stripWrappers removes sudo, env, nohup, time, timeout... and returns the
+// "real" command. viaXargs is true when the arguments will come from xargs.
 func stripWrappers(args []word) (rest []word, viaXargs bool) {
 	rest, viaXargs, _ = stripWrappersDir(args)
 	return rest, viaXargs
 }
 
-// stripWrappersDir — то же, что stripWrappers, и ещё папка, в которой
-// обёртка запустит команду: env -C dir cmd, sudo -D dir cmd (nil — текущая).
+// stripWrappersDir is stripWrappers plus the directory in which the wrapper
+// runs the command: env -C dir cmd, sudo -D dir cmd (nil means the current one).
 func stripWrappersDir(args []word) (rest []word, viaXargs bool, chdir *word) {
 	for len(args) > 0 {
 		name := filepath.Base(args[0].s)
@@ -327,7 +327,7 @@ func stripWrappersDir(args []word) (rest []word, viaXargs bool, chdir *word) {
 				flag := args[0].s
 				args = args[1:]
 				if flag == "--" {
-					break // break выходит из for, а не из switch
+					break // this break leaves the for loop, not the switch
 				}
 				if withValue[flag] && len(args) > 0 {
 					if flag == "-D" || flag == "--chdir" {
@@ -350,7 +350,7 @@ func stripWrappersDir(args []word) (rest []word, viaXargs bool, chdir *word) {
 		case "timeout":
 			args = skipFlags(args[1:], map[string]bool{"-s": true, "-k": true})
 			if len(args) > 0 {
-				args = args[1:] // длительность
+				args = args[1:] // the duration
 			}
 		case "xargs":
 			viaXargs = true
@@ -362,9 +362,9 @@ func stripWrappersDir(args []word) (rest []word, viaXargs bool, chdir *word) {
 	return args, viaXargs, chdir
 }
 
-// stripEnv пропускает опции и присваивания команды env и возвращает
-// саму запускаемую команду: env -i -u NAME -C dir VAR=1 cmd args…
-// chdir — папка из -C/--chdir (nil, если её нет).
+// stripEnv skips the options and assignments of the env command and returns
+// the command it runs: env -i -u NAME -C dir VAR=1 cmd args…
+// chdir is the directory from -C/--chdir (nil if there is none).
 func stripEnv(args []word) (rest []word, chdir *word) {
 	for len(args) > 0 {
 		a := args[0].s
@@ -387,7 +387,7 @@ func stripEnv(args []word) (rest []word, chdir *word) {
 			}
 			args = args[2:]
 		case a == "-S" || a == "--split-string":
-			// env -S "cmd arg…": команда записана одной строкой.
+			// env -S "cmd arg…": the command is written as a single string.
 			if len(args) < 2 {
 				return nil, chdir
 			}
@@ -436,12 +436,12 @@ func strs(ws []word) []string {
 func (p *Policy) checkCall(c *syntax.CallExpr, depth int) Verdict {
 	args, viaXargs, chdir := stripWrappersDir(callWords(c))
 	if len(args) == 0 {
-		return allowVerdict // только присваивания VAR=x
+		return allowVerdict // only assignments like VAR=x
 	}
 	if chdir == nil {
 		return p.checkArgs(args, viaXargs, depth)
 	}
-	// env -C dir cmd: команда работает в dir, а папка shell не меняется.
+	// env -C dir cmd: the command runs in dir while the shell's directory stays the same.
 	var v Verdict
 	p.isolated(func() {
 		p.trackCd("cd", []word{{s: "cd"}, *chdir})
@@ -454,9 +454,9 @@ func (p *Policy) checkArgs(args []word, viaXargs bool, depth int) Verdict {
 	name := filepath.Base(args[0].s)
 	v := allowVerdict
 
-	// Любое упоминание файла с секретами в аргументах — кроме команд,
-	// которые смотрят только на сам файл, а не на его содержимое.
-	// Проверяем итоговые пути: cat .en[v] и ссылка на .env — тоже .env.
+	// Any mention of a secrets file in the arguments counts, except for
+	// commands that only look at the file itself and not at its contents.
+	// Resolved paths are checked: cat .en[v] and a symlink to .env are .env too.
 	if !metadataOnly(name, args[1:]) {
 		for _, a := range args[1:] {
 			switch {
@@ -475,7 +475,7 @@ func (p *Policy) checkArgs(args []word, viaXargs bool, depth int) Verdict {
 	case name == "cd" || name == "pushd" || name == "popd":
 		p.trackCd(name, args)
 	case p.dirFuncs[name]:
-		p.cwdUnknown = true // функция из этой же команды делает cd
+		p.cwdUnknown = true // a function from this same command does a cd
 	case shells[name]:
 		v = worst(v, p.checkShellCall(args, depth))
 	case name == "eval":
@@ -485,12 +485,12 @@ func (p *Policy) checkArgs(args []word, viaXargs bool, depth int) Verdict {
 	case name == "git":
 		v = worst(v, p.checkGit(args[1:]))
 	case name == "holdfast" && isHoldfastRollback(args[1:]):
-		// Откат перезаписывает файлы проекта, в том числе правки самого
-		// пользователя, — это решает человек, а не агент.
+		// A rollback overwrites project files, including the user's own
+		// edits, so a human decides that, not the agent.
 		v = worst(v, Verdict{Ask, "holdfast-rollback", "a rollback overwrites project files; user confirmation required"})
 	case name == "holdfast" && changesHoldfastSetup(args[1:]):
-		// holdfast sync после правки CLAUDE.md может снять запреты — как и
-		// правку holdfast.toml, это решает пользователь.
+		// holdfast sync after an edit to CLAUDE.md can lift restrictions; like
+		// an edit to holdfast.toml, that is the user's call.
 		v = worst(v, Verdict{Ask, "holdfast-config", "this command changes Holdfast's protection settings; user confirmation required"})
 	case name == "npm" || name == "pnpm" || name == "yarn" || name == "bun":
 		if hasArg(args[1:], "publish") {
@@ -506,7 +506,7 @@ func (p *Policy) checkArgs(args []word, viaXargs bool, depth int) Verdict {
 	return v
 }
 
-// holdfastArgs пропускает глобальные опции holdfast (-C dir, --dir dir).
+// holdfastArgs skips holdfast's global options (-C dir, --dir dir).
 func holdfastArgs(args []word) []word {
 	for len(args) > 0 && strings.HasPrefix(args[0].s, "-") {
 		if (args[0].s == "-C" || args[0].s == "--dir") && len(args) > 1 {
@@ -517,15 +517,15 @@ func holdfastArgs(args []word) []word {
 	return args
 }
 
-// isHoldfastRollback распознаёт `holdfast [-C dir] guard rollback …`.
+// isHoldfastRollback recognizes `holdfast [-C dir] guard rollback …`.
 func isHoldfastRollback(args []word) bool {
 	args = holdfastArgs(args)
 	return len(args) >= 2 && args[0].s == "guard" && args[1].s == "rollback"
 }
 
-// changesHoldfastSetup — команда holdfast, которая пишет holdfast.toml или
-// .claude/settings.json: init, sync (кроме --dry-run), guard install и
-// guard uninstall (снимает защиту, а с --purge удаляет точки восстановления).
+// changesHoldfastSetup reports a holdfast command that writes holdfast.toml or
+// .claude/settings.json: init, sync (except --dry-run), guard install and
+// guard uninstall (removes the protection and, with --purge, the restore points).
 func changesHoldfastSetup(args []word) bool {
 	args = holdfastArgs(args)
 	switch {
@@ -539,8 +539,8 @@ func changesHoldfastSetup(args []word) bool {
 	return len(args) >= 2 && args[0].s == "guard" && (args[1].s == "install" || args[1].s == "uninstall")
 }
 
-// metadataCommands не читают содержимое файла: существует ли он, размер,
-// права, игнорируется ли git. Их можно применять и к .env.
+// metadataCommands do not read file contents: whether the file exists, its
+// size, permissions, whether git ignores it. They may be applied to .env too.
 var metadataCommands = map[string]bool{
 	"ls": true, "stat": true, "test": true, "[": true, "file": true, "du": true,
 	"realpath": true, "readlink": true, "basename": true, "dirname": true, "chmod": true,
@@ -555,17 +555,17 @@ func metadataOnly(name string, args []word) bool {
 	return metadataCommands[name]
 }
 
-// gitCall — вызов git после разбора глобальных опций.
+// gitCall is a git invocation after its global options are parsed.
 type gitCall struct {
-	sub        string // подкоманда: push, reset, …
-	rest       []word // её аргументы
-	dir        string // папка, где выполнится git (cd и -C)
-	dirUnknown bool   // папку или репозиторий не определить: cd $X, --git-dir
-	config     []word // значения -c key=val; --config-env — dynamic
+	sub        string // subcommand: push, reset, …
+	rest       []word // its arguments
+	dir        string // the directory git will run in (cd and -C)
+	dirUnknown bool   // the directory or repository can't be determined: cd $X, --git-dir
+	config     []word // -c key=val values; --config-env ones are dynamic
 }
 
-// parseGit пропускает глобальные опции git (-C dir, -c key=val, ...)
-// и запоминает те, что влияют на папку и конфигурацию.
+// parseGit skips git's global options (-C dir, -c key=val, ...) and
+// remembers the ones that affect the directory and the configuration.
 func parseGit(args []word, dir string, unknown bool) gitCall {
 	g := gitCall{dir: dir, dirUnknown: unknown}
 	for len(args) > 0 && strings.HasPrefix(args[0].s, "-") {
@@ -594,7 +594,7 @@ func parseGit(args []word, dir string, unknown bool) gitCall {
 		case "-c":
 			g.config = append(g.config, word{s: val, dynamic: dynamic})
 		case "--config-env":
-			// Значение берётся из переменной окружения — заранее неизвестно.
+			// The value comes from an environment variable, so it is unknown in advance.
 			g.config = append(g.config, word{s: val, dynamic: true})
 		case "--git-dir", "--work-tree", "--namespace":
 			g.dirUnknown = true
@@ -624,18 +624,18 @@ func execsRm(args []word) bool {
 	return false
 }
 
-// checkShellCall: bash -c "..." разбираем рекурсивно; bash <(curl ...) — запрет.
+// checkShellCall: bash -c "..." is parsed recursively; bash <(curl ...) is denied.
 func (p *Policy) checkShellCall(args []word, depth int) Verdict {
 	v := allowVerdict
 	for i := 1; i < len(args); i++ {
 		a := args[i]
 		if strings.HasPrefix(a.s, "-") && !strings.HasPrefix(a.s, "--") && strings.Contains(a.s, "c") && i+1 < len(args) {
-			// Дочерний shell — отдельный процесс: его cd не меняет нашу папку.
+			// A child shell is a separate process: its cd does not change our directory.
 			p.isolated(func() { v = worst(v, p.checkScript(args[i+1].s, depth+1)) })
 			i++
 		}
 	}
-	// Код для shell получается из сети: bash <(curl ...), sh -c "$(wget ...)".
+	// The shell's code comes from the network: bash <(curl ...), sh -c "$(wget ...)".
 	for _, a := range args[1:] {
 		if containsDownloader(a.node) {
 			v = worst(v, curlPipeVerdict())
@@ -649,7 +649,7 @@ func curlPipeVerdict() Verdict {
 		"running a script downloaded from the network (curl | sh) is not allowed. Download the file (curl -o), show it to the user and run it only after it has been reviewed"}
 }
 
-// containsDownloader — есть ли внутри узла вызов curl/wget.
+// containsDownloader reports whether the node contains a curl/wget call.
 func containsDownloader(n syntax.Node) bool {
 	found := false
 	syntax.Walk(n, func(node syntax.Node) bool {
@@ -664,17 +664,17 @@ func containsDownloader(n syntax.Node) bool {
 	return found
 }
 
-// readsProgramFromStdin — выполнит ли интерпретатор код из stdin.
-// `curl … | sh` и `curl … | python3` — да (опасно); а в `curl … | python3 -c '…'`
-// или `curl … | node script.js` скачанное — только данные, код свой.
+// readsProgramFromStdin reports whether the interpreter will execute code from stdin.
+// `curl … | sh` and `curl … | python3` do (dangerous); in `curl … | python3 -c '…'`
+// or `curl … | node script.js` the download is only data and the code is local.
 func readsProgramFromStdin(name string, args []word) bool {
-	// Флаги, после которых идёт значение, а не имя скрипта.
+	// Flags that are followed by a value rather than a script name.
 	withValue := map[string]bool{"-W": true, "-X": true, "-o": true, "-O": true, "-r": true, "--require": true}
 	for i := 0; i < len(args); i++ {
 		s := args[i].s
 		switch {
 		case s == "-":
-			return true // явное «программа из stdin»
+			return true // an explicit "program from stdin"
 		case s == "--":
 			return i+1 >= len(args)
 		case strings.HasPrefix(s, "--"):
@@ -685,11 +685,11 @@ func readsProgramFromStdin(name string, args []word) bool {
 			flags := s[1:]
 			switch {
 			case shells[name] && strings.Contains(flags, "c"):
-				return false // sh -c '…': код в аргументе
+				return false // sh -c '…': the code is in the argument
 			case shells[name] && strings.Contains(flags, "s"):
-				return true // bash -s: код из stdin
+				return true // bash -s: the code comes from stdin
 			case (name == "python" || name == "python3") && (strings.HasPrefix(flags, "c") || strings.HasPrefix(flags, "m")):
-				return false // python -c '…' / python -m модуль
+				return false // python -c '…' / python -m module
 			case !shells[name] && name != "python" && name != "python3" && strings.ContainsAny(flags, "eEp"):
 				return false // perl -e / -ne, ruby -e, node -e / -p
 			}
@@ -697,13 +697,13 @@ func readsProgramFromStdin(name string, args []word) bool {
 				i++
 			}
 		default:
-			return false // первый позиционный аргумент — файл скрипта
+			return false // the first positional argument is the script file
 		}
 	}
-	return true // скрипта нет — код читается из stdin
+	return true // no script given, so the code is read from stdin
 }
 
-// checkPipe ищет «скачать | выполнить»: curl ... | sh, wget -O- | sudo bash.
+// checkPipe looks for "download | execute": curl ... | sh, wget -O- | sudo bash.
 func (p *Policy) checkPipe(b *syntax.BinaryCmd) Verdict {
 	downloaded := false
 	for _, s := range pipeline(b) {
@@ -748,14 +748,14 @@ func (p *Policy) checkRedirect(r *syntax.Redirect) Verdict {
 	return v
 }
 
-// Команды, аргументы которых — изменяемые пути.
+// Commands whose arguments are paths they modify.
 var mutating = map[string]bool{
 	"rm": true, "mv": true, "touch": true, "tee": true, "truncate": true, "mkdir": true,
 	"rmdir": true, "chmod": true, "chown": true, "ln": true, "unlink": true, "shred": true,
 }
 
-// removers удаляют, переносят или меняют права целых папок: для них
-// служебный файл внутри папки — тоже цель (mv .claude x, chmod -R .holdfast).
+// removers delete, move or change permissions of whole directories: for them
+// a service file inside the directory is a target too (mv .claude x, chmod -R .holdfast).
 var removers = map[string]bool{
 	"rm": true, "mv": true, "rmdir": true, "chmod": true, "chown": true, "shred": true, "unlink": true,
 }
@@ -766,7 +766,7 @@ func (p *Policy) checkMutatingPaths(name string, args []word) Verdict {
 	var paths []string
 	switch {
 	case name == "cp" || name == "rsync" || name == "install" || name == "mv" || name == "ln":
-		// Куда на самом деле попадут файлы: cp a.txt dir/ → dir/a.txt.
+		// Where the files actually end up: cp a.txt dir/ → dir/a.txt.
 		dests, tooMany := p.copyTargets(name, args)
 		paths = dests
 		if tooMany {
@@ -774,8 +774,8 @@ func (p *Policy) checkMutatingPaths(name string, args []word) Verdict {
 				"Copy in parts, one directory at a time")
 		}
 		if name == "mv" || name == "ln" {
-			// mv удаляет источник; ln создаёт ещё одно имя для файла, и запись
-			// через жёсткую ссылку изменит оригинал.
+			// mv removes the source; ln creates another name for the file, and
+			// writing through a hard link changes the original.
 			words = nonFlags(args)
 		}
 	case mutating[name]:
@@ -825,7 +825,7 @@ func nonFlags(args []word) []word {
 	return out
 }
 
-// checkRm — rm -rf на корень, домашнюю папку и пути вне репозитория.
+// checkRm handles rm -rf on the root, the home directory and paths outside the repository.
 func (p *Policy) checkRm(args []word, viaXargs bool) Verdict {
 	recursive := false
 	var targets []word
@@ -839,7 +839,7 @@ func (p *Policy) checkRm(args []word, viaXargs bool) Verdict {
 		case a.s == "--recursive":
 			recursive = true
 		case !strings.HasPrefix(a.s, "--"):
-			// Слитые короткие флаги: -rf, -fR, -rvf.
+			// Combined short flags: -rf, -fR, -rvf.
 			if strings.ContainsAny(a.s[1:], "rR") {
 				recursive = true
 			}
@@ -852,8 +852,8 @@ func (p *Policy) checkRm(args []word, viaXargs bool) Verdict {
 	}
 
 	v := allowVerdict
-	var inProject []string // цели внутри проекта
-	otherCount := 0        // файлы в других репозиториях
+	var inProject []string // targets inside the project
+	otherCount := 0        // files in other repositories
 	for _, t := range targets {
 		relativeAfterUnknownCd := p.cwdUnknown && !filepath.IsAbs(p.expandHome(t.s))
 		if (t.dynamic && !strings.HasPrefix(t.s, "$HOME")) || relativeAfterUnknownCd {
@@ -877,14 +877,14 @@ func (p *Policy) checkRm(args []word, viaXargs bool) Verdict {
 	return v
 }
 
-// rmBases — что на самом деле удалит rm для одного аргумента.
-// «Всё в папке» (/*, ~/*, dir/*) проверяется как сама папка: rm -rf * в
-// корне проекта — это удаление проекта. Шаблон с частью имени (migr*,
-// *.png) раскрывается в конкретные пути, как это сделает shell.
+// rmBases is what rm will actually delete for one argument.
+// "Everything in a directory" (/*, ~/*, dir/*) is checked as the directory
+// itself: rm -rf * in the project root deletes the project. A pattern with part
+// of a name (migr*, *.png) is expanded into concrete paths, as the shell would do.
 func (p *Policy) rmBases(t word, recursive bool) []string {
 	var out []string
 	glob := hasGlob(t)
-	for _, form := range braceForms(t) { // rm -rf {src,dist} — две цели
+	for _, form := range braceForms(t) { // rm -rf {src,dist} is two targets
 		abs := p.abs(form)
 		i := strings.IndexAny(abs, "*?[")
 		if i < 0 || !glob {
@@ -905,9 +905,9 @@ func (p *Policy) rmBases(t word, recursive bool) []string {
 	return out
 }
 
-// checkRmTarget проверяет одну цель rm. Возвращает запрет, если он
-// окончательный; иначе копит результат в v, inProject и otherCount
-// (указатели: функция меняет переменные вызывающей стороны).
+// checkRmTarget checks one rm target. It returns a denial when that is
+// final; otherwise it accumulates the result in v, inProject and otherCount
+// (pointers: the function modifies the caller's variables).
 func (p *Policy) checkRmTarget(base string, recursive bool, v *Verdict, inProject *[]string, otherCount *int) Verdict {
 	switch {
 	case recursive && (base == "/" || base == filepath.Dir(base)):
@@ -915,16 +915,16 @@ func (p *Policy) checkRmTarget(base string, recursive bool, v *Verdict, inProjec
 	case recursive && (base == p.Home || isWithin(base, p.Home)):
 		return Verdict{Deny, "rm-home", "rm -r on the home directory is not allowed. Delete specific files inside the project"}
 	case recursive && (base == p.Root || isWithin(base, p.Root)):
-		// и сам репозиторий, и любая папка, которая его содержит
+		// both the repository itself and any directory that contains it
 		return Verdict{Deny, "rm-repo-root", "rm -r on the whole repository is not allowed. Delete specific files or directories"}
 	case !p.cfg.Strict() && !p.inRepo(base) && p.isTempPath(base):
-		// временные файлы вне проекта: удаляем без вопросов.
-		// Проверка идёт после repo-root: проект сам может лежать в /tmp.
+		// temporary files outside the project: deleted without asking.
+		// This check comes after repo-root: the project itself may live in /tmp.
 	case recursive && !p.inRepo(base):
 		return Verdict{Deny, "rm-outside-repo", fmt.Sprintf("rm -r outside the repository (%s) is not allowed. Work only with the files of the project %s", base, p.Root)}
 	case !p.cfg.Strict() && !p.inRepo(base) && p.inOtherRepo(base):
-		// Отдельные файлы в другом git-репозитории (агент работает и там):
-		// можно, но массовое удаление — нет, снапшот проекта их не защищает.
+		// Individual files in another git repository (the agent works there too)
+		// are fine, but mass deletion is not: the project's restore points don't cover them.
 		*otherCount += p.countTargets(base, false, p.cfg.MaxDeletes+1-*otherCount)
 	case !p.inRepo(base):
 		*v = worst(*v, p.soft("rm-outside-repo", fmt.Sprintf("deleting a file outside the repository (%s)", base),
@@ -935,8 +935,8 @@ func (p *Policy) checkRmTarget(base string, recursive bool, v *Verdict, inProjec
 	return allowVerdict
 }
 
-// inOtherRepo — путь внутри какого-то git-репозитория (не проекта). Репозиторий
-// во всю домашнюю папку (~/.git для dotfiles) или выше не считается.
+// inOtherRepo reports a path inside some git repository other than the project.
+// A repository spanning the whole home directory (~/.git for dotfiles) or higher does not count.
 func (p *Policy) inOtherRepo(path string) bool {
 	root := findGitRoot(path)
 	if root == "" || root == "/" || root == p.Home || isWithin(root, p.Home) {
@@ -945,8 +945,8 @@ func (p *Policy) inOtherRepo(path string) bool {
 	return true
 }
 
-// countTargets считает файлы, которые удалит rm, но не больше limit —
-// чтобы не обходить огромные папки ради ответа «больше лимита».
+// countTargets counts the files rm would delete, but no more than limit, so
+// that huge directories are not walked just to answer "more than the limit".
 func (p *Policy) countTargets(abs string, recursive bool, limit int) int {
 	if limit <= 0 {
 		return 0
@@ -976,20 +976,20 @@ func (p *Policy) countTargets(abs string, recursive bool, limit int) int {
 				n++
 			}
 			if n >= limit {
-				return filepath.SkipAll // досрочно прекращаем обход
+				return filepath.SkipAll // stop the walk early
 			}
 			return nil
 		})
 		if n == 0 {
-			n = 1 // несуществующий или пустой путь — считаем как один
+			n = 1 // a missing or empty path counts as one
 		}
 	}
 	return n
 }
 
-// checkGit: push --force и reset --hard — запрет, обычный push — спросить.
+// checkGit: push --force and reset --hard are denied, a plain push asks.
 func (p *Policy) checkGit(args []word) Verdict {
-	// Папка, где выполнится git: текущая (с учётом cd) и -C из команды.
+	// The directory git will run in: the current one (with cd applied) plus -C from the command.
 	g := parseGit(args, p.Cwd, p.cwdUnknown)
 	g.dir = p.abs(g.dir)
 	sub, rest, dir, dirUnknown := g.sub, g.rest, g.dir, g.dirUnknown
@@ -1012,7 +1012,7 @@ func (p *Policy) checkGit(args []word) Verdict {
 			}
 		}
 		if hasArg(rest, "--stdin") {
-			// Имена ссылок придут из stdin — что изменится, неизвестно.
+			// The ref names come from stdin, so what will change is unknown.
 			return p.soft("git-update-ref", "git update-ref --stdin: the refs it changes are not known in advance",
 				"Use the explicit form: git update-ref <ref> <value>")
 		}
@@ -1042,8 +1042,8 @@ func (p *Policy) checkGit(args []word) Verdict {
 	return allowVerdict
 }
 
-// checkConfigured применяет deny_commands / ask_commands и
-// синхронизированные правила-команды из конфига.
+// checkConfigured applies deny_commands / ask_commands and the synced
+// command rules from the config.
 func (p *Policy) checkConfigured(args []word) Verdict {
 	argv := strs(args)
 	argv[0] = filepath.Base(argv[0])
@@ -1073,9 +1073,9 @@ func (p *Policy) checkConfigured(args []word) Verdict {
 	return v
 }
 
-// MatchCommand: первое слово шаблона совпадает с именем команды, а
-// остальные слова встречаются в аргументах в том же порядке.
-// "git push --force" совпадает с "git push origin main --force".
+// MatchCommand: the first word of the pattern matches the command name, and
+// the remaining words occur in the arguments in the same order.
+// "git push --force" matches "git push origin main --force".
 func MatchCommand(argv []string, pattern string) bool {
 	fields := strings.Fields(pattern)
 	if len(fields) == 0 || len(argv) == 0 || argv[0] != fields[0] {

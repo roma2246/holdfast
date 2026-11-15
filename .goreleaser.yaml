@@ -1,4 +1,4 @@
-# Документация: https://goreleaser.com
+# Documentation: https://goreleaser.com
 version: 2
 
 project_name: holdfast
@@ -12,7 +12,7 @@ builds:
   - main: ./cmd/holdfast
     binary: holdfast
     env:
-      - CGO_ENABLED=0 # статический бинарник без зависимостей
+      - CGO_ENABLED=0 # a static binary without dependencies
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
     flags: [-trimpath]
@@ -45,6 +45,6 @@ homebrew_casks:
     homepage: https://github.com/roma2246/holdfast
     description: Restore points and guardrails for AI coding agents
     license: MIT
-    # Без токена tap-репозитория (секрет репозитория HOMEBREW) cask не
-    # публикуется, но релиз проходит; пре-релизы в tap не попадают никогда.
+    # Without the tap repository token (the repository secret HOMEBREW) the cask
+    # is not published, but the release goes through; pre-releases never reach the tap.
     skip_upload: '{{ if isEnvSet "HOMEBREW_TAP_GITHUB_TOKEN" }}auto{{ else }}true{{ end }}'

@@ -9,24 +9,24 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// skipDirs — папки, в которые обход не заходит.
+// skipDirs is the directories the walk does not enter.
 var skipDirs = map[string]bool{
 	"node_modules": true, "vendor": true, "testdata": true,
 	"dist": true, "build": true, "target": true,
 }
 
-// Discover находит файлы инструкций (CLAUDE.md, AGENTS.md, ...) в корне и
-// вложенных папках. Скрытые папки (.git, .holdfast) пропускаются.
+// Discover finds instruction files (CLAUDE.md, AGENTS.md, ...) in the root and
+// in nested directories. Hidden directories (.git, .holdfast) are skipped.
 func Discover(root string, names []string) ([]string, error) {
 	want := map[string]bool{}
 	for _, n := range names {
 		want[n] = true
 	}
 	var out []string
-	// WalkDir вызывает функцию для каждого файла и папки в дереве.
+	// WalkDir calls the function for every file and directory in the tree.
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil // нечитаемые папки просто пропускаем
+			return nil // unreadable directories are simply skipped
 		}
 		if d.IsDir() {
 			name := d.Name()
@@ -43,18 +43,17 @@ func Discover(root string, names []string) ([]string, error) {
 	return out, err
 }
 
-// Run проверяет файлы files всеми правилами rules и возвращает
-// отсортированные находки.
+// Run checks files with all of rules and returns the findings sorted.
 func Run(ctx context.Context, repo *Repo, files []string, rules []Rule) ([]Finding, error) {
 	results := make([][]Finding, len(files))
 
-	// errgroup — группа горутин: Wait() ждёт их все и возвращает первую
-	// ошибку. SetLimit ограничивает число одновременно работающих.
+	// errgroup is a group of goroutines: Wait() waits for all of them and
+	// returns the first error. SetLimit caps how many run at the same time.
 	g, ctx := errgroup.WithContext(ctx)
 	g.SetLimit(8)
 	for i, path := range files {
-		// Каждая горутина пишет только в свою ячейку results[i],
-		// поэтому мьютекс не нужен.
+		// Each goroutine writes only to its own slot results[i], so no
+		// mutex is needed.
 		g.Go(func() error {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -83,7 +82,7 @@ func Run(ctx context.Context, repo *Repo, files []string, rules []Rule) ([]Findi
 	return all, nil
 }
 
-// CheckDoc применяет правила к одному документу с учётом выключателей.
+// CheckDoc applies the rules to one document, honoring the disabling comments.
 func CheckDoc(doc *Doc, repo *Repo, rules []Rule) []Finding {
 	var out []Finding
 	for _, rule := range rules {
@@ -99,8 +98,8 @@ func CheckDoc(doc *Doc, repo *Repo, rules []Rule) []Finding {
 	return out
 }
 
-// ResolveTarget превращает аргумент PATH команды lint в корень репозитория
-// и список файлов. Если PATH — файл, проверяется только он.
+// ResolveTarget turns the PATH argument of the lint command into a repository
+// root and a list of files. If PATH is a file, only that file is checked.
 func ResolveTarget(path string) (root string, single string, err error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -116,8 +115,8 @@ func ResolveTarget(path string) (root string, single string, err error) {
 	return FindRoot(filepath.Dir(abs)), abs, nil
 }
 
-// FindRoot поднимается от dir вверх до папки с .git или holdfast.toml.
-// Если такой нет — возвращает сам dir.
+// FindRoot walks up from dir to a directory with .git or holdfast.toml.
+// If there is none, it returns dir itself.
 func FindRoot(dir string) string {
 	for d := dir; ; d = filepath.Dir(d) {
 		for _, marker := range []string{".git", "holdfast.toml"} {

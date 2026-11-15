@@ -29,11 +29,11 @@ func TestInstallHookPreservesSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	if s["permissions"] == nil {
-		t.Error("permissions потеряны")
+		t.Error("permissions were lost")
 	}
 	hooks := s["hooks"].(map[string]any)
 	if hooks["Stop"] == nil {
-		t.Error("хук Stop потерян")
+		t.Error("the Stop hook was lost")
 	}
 	pre := hooks["PreToolUse"].([]any)
 	if len(pre) != 2 {
@@ -49,9 +49,9 @@ func TestInstallHookPreservesSettings(t *testing.T) {
 		t.Errorf("UserPromptSubmit: %v", ups)
 	}
 
-	// Повторная установка ничего не меняет.
+	// Installing again changes nothing.
 	if _, changed, err := InstallHook(root, false, DefaultBin); err != nil || changed {
-		t.Fatalf("повторная установка: changed=%v err=%v", changed, err)
+		t.Fatalf("second install: changed=%v err=%v", changed, err)
 	}
 }
 
@@ -63,11 +63,11 @@ func TestInstallHookNewAndLocal(t *testing.T) {
 	}
 	write(t, root, ".claude/settings.json", "{broken")
 	if _, _, err := InstallHook(root, false, DefaultBin); err == nil {
-		t.Fatal("ожидалась ошибка для битого JSON")
+		t.Fatal("expected an error for broken JSON")
 	}
 	write(t, root, ".claude/settings.json", "  ")
 	if _, changed, err := InstallHook(root, false, DefaultBin); err != nil || !changed {
-		t.Fatalf("пустой файл: %v %v", changed, err)
+		t.Fatalf("empty file: %v %v", changed, err)
 	}
 }
 
@@ -84,7 +84,7 @@ func TestReadLogMissingAndCorrupt(t *testing.T) {
 }
 
 func TestInstallHookAddsMissingEvent(t *testing.T) {
-	// Старая установка (только PreToolUse) дополняется хуком точек восстановления.
+	// An old install (PreToolUse only) is completed with the restore-point hook.
 	root := t.TempDir()
 	write(t, root, ".claude/settings.json", `{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"holdfast guard check"}]}]}}`)
 	_, changed, err := InstallHook(root, false, "")

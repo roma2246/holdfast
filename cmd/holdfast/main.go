@@ -1,5 +1,5 @@
-// Точка входа Holdfast. Вся логика живёт в internal/, здесь только
-// запуск CLI и преобразование результата в код выхода процесса.
+// Entry point of Holdfast. All the logic lives in internal/; here we only
+// start the CLI and turn the result into the process exit code.
 package main
 
 import (
@@ -10,16 +10,16 @@ import (
 	"github.com/roma2246/holdfast/internal/cli"
 )
 
-// version подставляется при сборке GoReleaser'ом через
-// -ldflags "-X main.version=1.2.3". По умолчанию — "dev".
+// version is injected at build time by GoReleaser through
+// -ldflags "-X main.version=1.2.3". The default is "dev".
 var version = "dev"
 
 func main() {
 	os.Exit(cli.Execute(resolveVersion(version), os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
-// resolveVersion: при `go install …@v0.1.1` ldflags не задаются, но Go сам
-// встраивает в бинарник версию модуля — берём её из debug.ReadBuildInfo.
+// resolveVersion: with `go install …@v0.1.1` no ldflags are set, but Go itself
+// embeds the module version in the binary, so we take it from debug.ReadBuildInfo.
 func resolveVersion(v string) string {
 	if v != "dev" {
 		return v

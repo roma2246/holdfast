@@ -13,28 +13,28 @@ import (
 	"github.com/roma2246/holdfast/internal/config"
 )
 
-// Repo — контекст репозитория, общий для всех файлов: корень, конфиг и
-// кэш разобранных package.json / Makefile / justfile.
+// Repo is the repository context shared by all files: the root, the config
+// and a cache of parsed package.json / Makefile / justfile.
 //
-// Файлы проверяются параллельно, поэтому кэш защищён мьютексом.
+// Files are checked in parallel, so the cache is protected by a mutex.
 type Repo struct {
 	Root   string
 	Config *config.Config
 
 	mu    sync.Mutex
-	cache map[string]map[string]bool // путь к файлу → множество имён
+	cache map[string]map[string]bool // file path → set of names
 
-	// sync.Once гарантирует, что индекс имён построится ровно один раз,
-	// даже если его одновременно запросят несколько горутин.
+	// sync.Once guarantees that the name index is built exactly once, even
+	// if several goroutines ask for it at the same time.
 	namesOnce sync.Once
 	baseNames map[string]bool
 }
 
-// maxIndexedFiles ограничивает обход огромных репозиториев.
+// maxIndexedFiles limits the walk of huge repositories.
 const maxIndexedFiles = 100_000
 
-// HasBaseName — есть ли где-нибудь в репозитории файл или папка с таким
-// именем. Нужен для упоминаний вроде «policy.go» без пути.
+// HasBaseName reports whether the repository has a file or directory with
+// this name anywhere. Needed for mentions like "policy.go" without a path.
 func (r *Repo) HasBaseName(name string) bool {
 	r.namesOnce.Do(func() {
 		r.baseNames = map[string]bool{}
@@ -56,7 +56,7 @@ func (r *Repo) HasBaseName(name string) bool {
 	return r.baseNames[name]
 }
 
-// NewRepo создаёт контекст репозитория.
+// NewRepo creates a repository context.
 func NewRepo(root string, cfg *config.Config) *Repo {
 	if cfg == nil {
 		cfg = config.Default()
@@ -64,13 +64,13 @@ func NewRepo(root string, cfg *config.Config) *Repo {
 	return &Repo{Root: root, Config: cfg, cache: map[string]map[string]bool{}}
 }
 
-// Exists проверяет, существует ли путь (абсолютный).
+// Exists checks whether a path (absolute) exists.
 func (r *Repo) Exists(abs string) bool {
 	_, err := os.Stat(abs)
 	return err == nil
 }
 
-// Kind — источник команд для HF002.
+// Kind is a source of commands for HF002.
 type Kind int
 
 const (
@@ -79,8 +79,8 @@ const (
 	KindJust
 )
 
-// Names возвращает множество скриптов/целей для ближайшего к dir файла
-// нужного типа (поднимаясь до корня репозитория). found=false — файла нет.
+// Names returns the set of scripts/targets for the file of the given kind
+// nearest to dir (walking up to the repository root). found=false means there is no such file.
 func (r *Repo) Names(kind Kind, dir string) (names map[string]bool, file string, found bool) {
 	candidates := map[Kind][]string{
 		KindNPM:  {"package.json"},
@@ -95,7 +95,7 @@ func (r *Repo) Names(kind Kind, dir string) (names map[string]bool, file string,
 				return r.load(kind, p), p, true
 			}
 		}
-		// Не выходим за пределы корня репозитория.
+		// Don't go above the repository root.
 		if d == r.Root || d == filepath.Dir(d) || !strings.HasPrefix(d, r.Root) {
 			break
 		}
@@ -140,9 +140,9 @@ func parsePackageJSON(path string) map[string]bool {
 }
 
 var (
-	// "build test: deps" — цели до двоеточия; исключаем присваивания ":=" и "::=".
+	// "build test: deps": targets before the colon; ":=" and "::=" assignments are excluded.
 	makeTargetRe = regexp.MustCompile(`^([A-Za-z0-9_./%-][A-Za-z0-9_./% -]*?)\s*::?(?:[^=]|$)`)
-	// "@build arg='x': deps" — имя рецепта justfile, затем параметры.
+	// "@build arg='x': deps": the justfile recipe name, then parameters.
 	justRecipeRe = regexp.MustCompile(`^@?([A-Za-z0-9_-]+)(?:\s+[^:=]*)?:(?:[^=]|$)`)
 )
 

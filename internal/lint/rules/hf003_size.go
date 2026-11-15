@@ -14,10 +14,10 @@ type sizeRule struct{}
 func (sizeRule) ID() string          { return "HF003" }
 func (sizeRule) Description() string { return "The file exceeds the token limit" }
 
-// EstimateTokens — грубая оценка: символы / 4 (без вызова токенизатора).
+// EstimateTokens is a rough estimate: characters / 4 (no tokenizer call).
 func EstimateTokens(text string) int {
-	// utf8.RuneCountInString считает символы, а не байты:
-	// в UTF-8 русская буква занимает 2 байта.
+	// utf8.RuneCountInString counts characters, not bytes:
+	// in UTF-8 a Cyrillic letter takes 2 bytes.
 	return utf8.RuneCountInString(text) / 4
 }
 

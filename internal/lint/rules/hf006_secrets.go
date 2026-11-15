@@ -20,7 +20,7 @@ func (secretsRule) Description() string {
 type secretPattern struct {
 	name string
 	re   *regexp.Regexp
-	// group — номер группы со значением секрета (0 — всё совпадение).
+	// group is the number of the group holding the secret value (0 is the whole match).
 	group int
 }
 
@@ -33,11 +33,11 @@ var secretPatterns = []secretPattern{
 	{"Google API key", regexp.MustCompile(`\bAIza[0-9A-Za-z_\-]{35}\b`), 0},
 	{"Stripe key", regexp.MustCompile(`\b[sr]k_live_[0-9A-Za-z]{20,}\b`), 0},
 	{"JWT", regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`), 0},
-	// password = "..." / API_KEY: ... / пароль: ...
+	// password = "..." / API_KEY: ... (the Russian word for "password" is matched too)
 	{"password or key", regexp.MustCompile(`(?i)\b(?:api[_-]?key|secret(?:[_-]?key)?|access[_-]?token|auth[_-]?token|token|password|passwd|pwd|пароль)\b["']?\s*[:=]\s*["']?([^\s"'` + "`" + `,;]{8,})`), 1},
 }
 
-// Значения-заглушки, которые не считаем секретами.
+// Placeholder values that are not treated as secrets.
 var placeholderRe = regexp.MustCompile(`(?i)^(?:<.*>|\$\{?.*|x{4,}.*|\*{3,}.*|your[_-].*|example.*|changeme|dummy.*|test.*|placeholder.*|\.\.\..*|redacted|todo)$`)
 
 func (r secretsRule) Check(doc *lint.Doc, _ *lint.Repo) []lint.Finding {
@@ -55,13 +55,13 @@ func (r secretsRule) Check(doc *lint.Doc, _ *lint.Repo) []lint.Finding {
 			out = append(out, lint.F(r.ID(), lint.Error, doc, i+1,
 				fmt.Sprintf("looks like a secret (%s): %s", p.name, maskSecret(value)),
 				"remove the secret from the file and rotate it; give the agent the name of an environment variable, not the value"))
-			break // одной находки на строку достаточно
+			break // one finding per line is enough
 		}
 	}
 	return out
 }
 
-// maskSecret оставляет первые 4 символа, чтобы отчёт сам не стал утечкой.
+// maskSecret keeps the first 4 characters so that the report itself does not become a leak.
 func maskSecret(s string) string {
 	if len(s) <= 4 {
 		return strings.Repeat("*", len(s))
