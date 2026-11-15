@@ -111,7 +111,7 @@ func (p *Policy) scanDelete(targets []string, recursive bool, match func(name st
 	for _, t := range targets {
 		paths := []string{t}
 		if strings.ContainsAny(t, "*?[") {
-			paths, _ = filepath.Glob(t)
+			paths = shellGlob(t)
 		}
 		for _, path := range paths {
 			fi, err := os.Lstat(path)
@@ -175,6 +175,19 @@ func (p *Policy) deleteInProject(what string, targets []string, recursive bool, 
 	s := p.scanDelete(targets, recursive, match)
 	if s.inGit {
 		return Verdict{Deny, "delete-git-dir", what + " затронет служебную папку .git: в ней история проекта и точки восстановления. Укажи конкретные файлы или папки проекта"}
+	}
+	// rm -r dir удаляет и файлы внутри: правила путей применяем к каждому.
+	rules := allowVerdict
+	for _, f := range s.files {
+		if p.isService(f) {
+			return p.serviceVerdict(f)
+		}
+		if rules = worst(rules, p.pathRules(f)); rules.Decision == Deny {
+			return rules
+		}
+	}
+	if rules.Decision != Allow {
+		return rules
 	}
 	if len(s.files) <= p.cfg.MaxDeletes && !s.tooMany {
 		if s.disposable && !p.cfg.Strict() {

@@ -59,7 +59,20 @@ type Policy struct {
 	Home string // домашняя папка пользователя
 	cfg  *config.GuardConfig
 
-	cwdUnknown bool // был `cd $VAR` — относительные пути неизвестны
+	cwdUnknown bool       // был `cd $VAR` — относительные пути неизвестны
+	dirStack   []dirEntry // стек pushd/popd
+	dirFuncs   map[string]bool
+
+	// Состояние git, которое меняет сама проверяемая команда: хук видит
+	// файлы до её выполнения, поэтому `git switch main && git push` надо
+	// учитывать по тексту команды.
+	branches         map[string]branchState // репозиторий → ветка после checkout/switch
+	gitConfigChanged bool                   // git config / git remote / запись в .git/config
+	gitEnv           bool                   // GIT_DIR, GIT_CONFIG_* в окружении команды
+
+	realRoot string            // Root после раскрытия символических ссылок
+	dirCache map[string]string // папка → она же без ссылок (на одну проверку)
+	services *serviceSet       // служебные файлы Holdfast
 
 	// touched — файлы, которые затрагивает действие (для подсказок агенту).
 	touched []string
@@ -118,16 +131,18 @@ func (p *Policy) soft(rule, reason, hint string) Verdict {
 func (p *Policy) Touched() []string { return p.touched }
 
 // CheckFile проверяет чтение или запись файла инструментами Read/Edit/Write.
+// Правила применяются и к пути, и к файлу, на который он ссылается.
 func (p *Policy) CheckFile(op FileOp, path string) Verdict {
 	abs := p.abs(path)
 	p.touched = []string{abs}
-	if v := p.checkSensitive(abs); v.Decision != Allow {
-		return v
+	v := allowVerdict
+	for _, t := range []string{abs, p.realPath(abs)} {
+		v = worst(v, p.checkSensitive(t))
+		if op == OpWrite {
+			v = worst(v, p.checkWritePath(t))
+		}
 	}
-	if op == OpWrite {
-		return p.checkWritePath(abs)
-	}
-	return allowVerdict
+	return v
 }
 
 // abs превращает путь в абсолютный относительно Cwd, раскрывая ~ и $HOME.
@@ -204,15 +219,23 @@ func (p *Policy) isTempPath(abs string) bool {
 	return false
 }
 
-// checkWritePath — запись/изменение файла: синхронизированные запреты
-// и защищённые папки из конфига.
+// checkWritePath — запись/изменение файла: служебные файлы Holdfast,
+// синхронизированные запреты и защищённые папки из конфига.
 func (p *Policy) checkWritePath(abs string) Verdict {
+	if p.isService(abs) {
+		return p.serviceVerdict(abs)
+	}
 	if !p.inRepo(abs) {
 		return allowVerdict
 	}
 	if len(p.touched) == 0 || p.touched[len(p.touched)-1] != abs {
 		p.touched = append(p.touched, abs)
 	}
+	return p.pathRules(abs)
+}
+
+// pathRules — правила конфига для файла внутри проекта.
+func (p *Policy) pathRules(abs string) Verdict {
 	rel := p.rel(abs)
 	for _, r := range p.cfg.Synced.Rules {
 		if r.Kind == config.KindDenyPath && p.match(r.Pattern, rel) {

@@ -22,7 +22,11 @@ import (
 //   - снимок другого рабочего дерева не выбирается;
 //   - массовое удаление разрешается, только если удаляемое есть в точке;
 //   - неудачная точка не выглядит как успешная;
-//   - ошибка конфига не ослабляет защиту.
+//   - ошибка конфига не ослабляет защиту;
+//   - дочерний shell не меняет контекст родителя;
+//   - эквивалентные формы команды получают одинаковое решение: правила
+//     путей применяются к итоговым файлам, push — к итоговой ветке;
+//   - служебные файлы Holdfast агент не меняет ни одной формой.
 
 // diskState читает все файлы рабочего дерева (включая игнорируемые), кроме .git.
 func diskState(t *testing.T, dir string) map[string]string {
@@ -547,5 +551,272 @@ func TestInstallEdgeCases(t *testing.T) {
 	}
 	if _, changed, _ := InstallHook(other, false, "/Users/me/My Tools/holdfast"); changed {
 		t.Error("повторная установка с тем же путём не должна ничего менять")
+	}
+}
+
+// Дочерний shell — ( … ), $( … ), <( … ), bash -c, часть конвейера,
+// фоновая команда, env -C — не меняет папку для следующих команд.
+func TestChildShellDoesNotChangeParentContext(t *testing.T) {
+	p := autoPolicy(t, fakeRepo(t, "ref: refs/heads/dev"))
+	children := []string{
+		"(cd %s)", "(cd %s; ls)", "bash -c 'cd %s'", `sh -c "cd %s && ls"`, "zsh -c 'cd %s'",
+		"echo $(cd %s; pwd)", "cat <(cd %s; ls)", "cd %s &", "cd %s | cat", "ls | cd %s",
+		"env -C %s ls", "sudo -D %s ls", "f() { cd %s; }", "pushd %s >/dev/null; popd",
+	}
+	follow := []string{"rm -rf projects", "rm -rf docs/old", "git push origin dev", "rm -rf build"}
+	for _, dir := range []string{"/", "~", "/etc"} {
+		for _, c := range children {
+			child := fmt.Sprintf(c, dir)
+			for _, f := range follow {
+				want := p.CheckCommand(f)
+				seps := []string{"; ", " && ", "\n"}
+				switch {
+				case strings.HasSuffix(child, "&"):
+					seps = []string{"\n"} // «cmd &; …» — синтаксическая ошибка
+				case strings.HasSuffix(child, "}"):
+					// «f() { … } && x» парсер относит x к определению функции
+					seps = []string{"; ", "\n"}
+				}
+				for _, sep := range seps {
+					cmd := child + sep + f
+					if got := p.CheckCommand(cmd); got.Decision != want.Decision || got.Rule != want.Rule {
+						t.Errorf("%q = %s [%s], а без дочернего cd — %s [%s]", cmd, got.Decision, got.Rule, want.Decision, want.Rule)
+					}
+				}
+			}
+		}
+	}
+	// Контроль: cd в самом shell меняет папку, дочерний shell её наследует,
+	// а вызов функции с cd делает папку неизвестной.
+	for _, cmd := range []string{
+		"cd / && rm -rf projects",
+		"cd / && (rm -rf projects)",
+		"cd / && bash -c 'rm -rf projects'",
+		"pushd / && rm -rf projects",
+		"f() { cd /; }; f; rm -rf projects",
+		"env -C / rm -rf projects",
+	} {
+		if got := p.CheckCommand(cmd); got.Decision != Deny {
+			t.Errorf("%q = %s [%s], want deny", cmd, got.Decision, got.Rule)
+		}
+	}
+}
+
+// pathProject — проект с секретом, запретом на go.sum, защищённой папкой и
+// символическими ссылками на них.
+func pathProject(t *testing.T) (*Policy, string) {
+	t.Helper()
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		".env": "SECRET=1", "go.sum": "x", "notes.txt": "n", "migrations/001.sql": "x",
+		"other/go.sum": "y", "other/readme.md": "r", "sub/keep.txt": "k",
+	} {
+		write(t, dir, name, content)
+	}
+	for link, target := range map[string]string{"alias.txt": ".env", "lock.link": "go.sum", "dangling.txt": ".env.local"} {
+		if err := os.Symlink(target, filepath.Join(dir, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := NewPolicy(dir, dir, &config.GuardConfig{
+		ProtectedPaths: []string{"migrations/**"},
+		Synced: config.SyncedConfig{Rules: []config.SyncedRule{
+			{Kind: config.KindDenyPath, Pattern: "go.sum", Source: "CLAUDE.md:1"},
+		}},
+	})
+	p.Home = fakeHome
+	p.tempDirs = nil
+	return p, dir
+}
+
+// Запреты путей и секретов применяются к итоговому файлу: glob, {…},
+// символическая ссылка и cp в папку дают то же решение, что прямой путь.
+func TestEquivalentPathFormsGetSameDecision(t *testing.T) {
+	p, _ := pathProject(t)
+	groups := []struct {
+		want  Decision
+		rule  string
+		forms []string
+	}{
+		{Deny, "secret-file", []string{
+			"cat .env", "cat .en[v]", "cat .e?v", "cat .e{n,x}v", "cat ./sub/../.env", "cat alias.txt",
+			"head -n1 .en*", "cat < .en[v]", "grep SECRET alia?.txt", "cat dangling.txt", "cat *.txt",
+		}},
+		{Deny, "synced-deny-path", []string{
+			"echo x > go.sum", "echo x > go.s[u]m", "echo x > go.{sum,mod}", "rm go.su*", "echo x > lock.link",
+			"cp other/go.sum .", "cp other/go.sum ./", "cp other/go.sum sub/..", "cp -t . other/go.sum",
+			"cp --target-directory=. other/go.sum", "mv notes.txt go.sum", "cp -r other/. .", "rsync -a other/ .",
+			"sed -i s/a/b/ go.su?", "tee lock.link", "ln -sf notes.txt go.sum", "dd if=/dev/zero of=go.sum",
+		}},
+		{Ask, "protected-path", []string{
+			"touch migrations/002.sql", "cp notes.txt migrations/", "cp notes.txt migr*/", "rm -r migrations",
+			"echo x > migrations/00[1].sql", "rm -r migr*",
+		}},
+		{Allow, "", []string{
+			"cat notes.txt", "cat 'note?.txt'", "ls -la", "cp other/readme.md .", "rm other/go.sum",
+			"echo x > sub/new.txt", "cat sub/*.txt", "cp notes.txt sub/",
+		}},
+	}
+	for _, g := range groups {
+		for _, cmd := range g.forms {
+			if got := p.CheckCommand(cmd); got.Decision != g.want || got.Rule != g.rule {
+				t.Errorf("%q = %s [%s], want %s [%s]", cmd, got.Decision, got.Rule, g.want, g.rule)
+			}
+		}
+	}
+	// Инструменты Read/Edit/Write тоже идут по ссылке.
+	if got := p.CheckFile(OpRead, "alias.txt"); got.Rule != "secret-file" {
+		t.Errorf("Read alias.txt = %s [%s], want secret-file", got.Decision, got.Rule)
+	}
+	if got := p.CheckFile(OpWrite, "lock.link"); got.Rule != "synced-deny-path" {
+		t.Errorf("Edit lock.link = %s [%s], want synced-deny-path", got.Decision, got.Rule)
+	}
+}
+
+// Служебные файлы Holdfast — настройки защиты и точки восстановления —
+// агент не меняет ни правкой, ни командой; читать их можно.
+func TestServiceFilesAreProtected(t *testing.T) {
+	p, dir := realProject(t)
+	write(t, dir, "holdfast.toml", "[guard]\n")
+	write(t, dir, ".claude/settings.json", "{}")
+	write(t, dir, ".holdfast/checkpoints/s1", "x")
+	if err := os.Symlink("holdfast.toml", filepath.Join(dir, "cfg.link")); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "update-ref", "refs/holdfast/main/x", "HEAD")
+
+	files := []string{
+		"holdfast.toml", ".claude/settings.json", ".claude/settings.local.json", ".holdfast/checkpoints/s1",
+		".git/refs/holdfast/main/x", ".git/packed-refs", "~/.claude/settings.json", "cfg.link", "holdfast.tom?",
+	}
+	forms := []string{
+		"echo x > %s", "echo x >> %s", "sed -i s/a/b/ %s", "cp drafts/0.md %s", "mv %s /tmp/x", "rm %s",
+		"tee %s", "truncate -s0 %s", "rm -f %s", "chmod 000 %s", "ln -sf /dev/null %s", "(echo x > %s)",
+		"bash -c 'echo x > %s'",
+	}
+	for _, f := range files {
+		for _, form := range forms {
+			cmd := fmt.Sprintf(form, f)
+			if got := p.CheckCommand(cmd); got.Decision != Deny {
+				t.Errorf("%q = %s [%s], want deny", cmd, got.Decision, got.Rule)
+			}
+		}
+		if strings.ContainsAny(f, "?") {
+			continue
+		}
+		if got := p.CheckFile(OpWrite, f); got.Decision != Deny || got.Rule != "holdfast-config" {
+			t.Errorf("Edit %s = %s [%s], want deny [holdfast-config]", f, got.Decision, got.Rule)
+		}
+	}
+	for cmd, want := range map[string]Decision{
+		"rm -rf .claude":          Deny,
+		"mv .claude /tmp/c":       Deny,
+		"rm -rf .holdfast":        Deny,
+		"chmod -R 000 .holdfast":  Deny,
+		"cp -r /tmp/x .holdfast/": Deny,
+		"holdfast sync":           Ask,
+		"holdfast sync --yes":     Ask,
+		"holdfast -C . init":      Ask,
+		"holdfast guard install":  Ask,
+		"holdfast sync --dry-run": Allow,
+		"cat holdfast.toml":       Allow,
+		"mkdir -p .claude/agents": Allow,
+		"echo x > .claude/notes":  Allow,
+	} {
+		if got := p.CheckCommand(cmd); got.Decision != want {
+			t.Errorf("%q = %s [%s], want %s", cmd, got.Decision, got.Rule, want)
+		}
+	}
+	if got := p.CheckFile(OpRead, "holdfast.toml"); got.Decision != Allow {
+		t.Errorf("Read holdfast.toml = %s, want allow", got.Decision)
+	}
+	// strict: правку решает пользователь.
+	strict := NewPolicy(dir, dir, &config.GuardConfig{Mode: config.ModeStrict})
+	strict.Home = fakeHome
+	if got := strict.CheckFile(OpWrite, "holdfast.toml"); got.Decision != Ask || got.Rule != "holdfast-config" {
+		t.Errorf("strict Edit holdfast.toml = %s [%s], want ask", got.Decision, got.Rule)
+	}
+}
+
+// pushRepo — «репозиторий» на ветке dev с ветками main и dev и, по
+// желанию, конфигурацией .git/config.
+func pushRepo(t *testing.T, gitConfig string, extra map[string]string) *Policy {
+	t.Helper()
+	root := fakeRepo(t, "ref: refs/heads/dev")
+	write(t, root, ".git/refs/heads/main", "1111111111111111111111111111111111111111\n")
+	write(t, root, ".git/refs/heads/dev", "2222222222222222222222222222222222222222\n")
+	if gitConfig != "" {
+		write(t, root, ".git/config", gitConfig)
+	}
+	for name, content := range extra {
+		write(t, root, name, content)
+	}
+	return autoPolicy(t, root)
+}
+
+// Push в защищённую ветку запрещён, как бы ни было задано назначение;
+// если назначение не определить — отдельный запрет с подсказкой.
+func TestPushDestinationIsResolved(t *testing.T) {
+	p := pushRepo(t, "", nil)
+	cases := []struct {
+		want  string // правило; "" — разрешено
+		forms []string
+	}{
+		{"git-push-protected", []string{
+			"git push origin main", "git push origin HEAD:main", "git push origin dev:refs/heads/main",
+			"git -c remote.origin.push=HEAD:main push", "git -c Remote.origin.PUSH=HEAD:main push",
+			"git -c remote.origin.push=refs/heads/dev:refs/heads/main push origin",
+			"git -c remote.origin.push=refs/heads/dev:refs/heads/main push origin dev",
+			"git -c push.default=upstream -c branch.dev.merge=refs/heads/main push",
+			"git switch main && git push", "git checkout main; git push origin HEAD", "git branch -m main && git push",
+			"(git switch main); git push", "git -C . switch main && git push",
+		}},
+		{"git-push-unclear", []string{
+			"git -c push.default=matching push", "git push origin $BRANCH", "git push $REMOTE",
+			"git -c remote.origin.push=$X push", "git --config-env=remote.origin.push=V push",
+			"GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.push GIT_CONFIG_VALUE_0=HEAD:main git push",
+			"env GIT_DIR=/x git push origin dev", "export GIT_CONFIG_GLOBAL=/tmp/x; git push",
+			"git config remote.origin.push HEAD:main && git push", "echo '[push]' >> .git/config && git push",
+			"git checkout $B && git push", "git checkout v1.0 && git push", "git checkout - && git push",
+			"git push origin 'refs/heads/*:refs/heads/*'", "git push origin :",
+			"git switch -c x origin/main && git push",
+		}},
+		{"git-push-force", []string{"git -c remote.origin.mirror=true push", "git -c remote.origin.push=+HEAD:dev push"}},
+		{"git-push-tags", []string{"git -c push.followTags=true push origin dev"}},
+		{"", []string{
+			"git push origin dev", "git push", "git push origin HEAD", "git -c push.default=current push",
+			"git switch -c feature && git push -u origin feature", "git -c core.autocrlf=false push origin dev",
+			"git switch feature && git push", "GIT_SSH_COMMAND='ssh -i k' git push origin dev",
+			"git -c push.followTags=true push --no-follow-tags origin dev", "git config --get push.default && git push",
+			"git checkout notes.md && git push",
+		}},
+	}
+	write(t, p.Root, "notes.md", "x")
+	for _, c := range cases {
+		for _, cmd := range c.forms {
+			got := p.CheckCommand(cmd)
+			if c.want == "" && got.Decision != Allow || c.want != "" && (got.Decision != Deny || got.Rule != c.want) {
+				t.Errorf("%q = %s [%s], want %q", cmd, got.Decision, got.Rule, c.want)
+			}
+		}
+	}
+
+	// То же назначение из файлов конфигурации git, включая include.
+	for _, tc := range []struct {
+		name, config string
+		extra        map[string]string
+		want         string
+	}{
+		{"remote.origin.push", "[remote \"origin\"]\n\tpush = HEAD:main\n", nil, "git-push-protected"},
+		{"upstream", "[push]\n\tdefault = upstream ; комментарий\n[branch \"dev\"]\n\tmerge = refs/heads/main\n", nil, "git-push-protected"},
+		{"include", "[include]\n\tpath = extra.cfg\n", map[string]string{".git/extra.cfg": "[push]\ndefault = matching\n"}, "git-push-unclear"},
+		{"mirror", "[remote \"origin\"]\n\tmirror\n", nil, "git-push-force"},
+		{"simple", "[push]\n\tdefault = simple\n[branch \"dev\"]\n\tmerge = refs/heads/main\n", nil, ""},
+	} {
+		p := pushRepo(t, tc.config, tc.extra)
+		got := p.CheckCommand("git push")
+		if tc.want == "" && got.Decision != Allow || tc.want != "" && got.Rule != tc.want {
+			t.Errorf("%s: git push = %s [%s], want %q", tc.name, got.Decision, got.Rule, tc.want)
+		}
 	}
 }

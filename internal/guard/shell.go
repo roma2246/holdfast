@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -21,20 +22,52 @@ const maxDepth = 5
 func (p *Policy) CheckCommand(src string) Verdict {
 	saved := p.Cwd
 	p.touched = nil
+	p.dirStack, p.dirFuncs = nil, nil
+	p.branches, p.gitConfigChanged, p.gitEnv = nil, false, false
+	p.dirCache = nil // команда может создать ссылку — не верим старому кэшу
 	defer func() { p.Cwd, p.cwdUnknown = saved, false }()
 	return p.checkScript(src, 0)
 }
 
-// trackCd обновляет текущую папку после `cd X`.
-func (p *Policy) trackCd(args []word) {
-	switch {
-	case len(args) < 2:
-		p.Cwd = p.Home
-	case args[1].dynamic || args[1].s == "-":
-		p.cwdUnknown = true
-	default:
-		p.Cwd = p.abs(args[1].s)
+// dirEntry — папка в стеке pushd.
+type dirEntry struct {
+	dir     string
+	unknown bool
+}
+
+// trackCd обновляет текущую папку после cd, pushd и popd.
+func (p *Policy) trackCd(name string, args []word) {
+	switch name {
+	case "popd":
+		if n := len(p.dirStack); n > 0 {
+			top := p.dirStack[n-1]
+			p.Cwd, p.cwdUnknown, p.dirStack = top.dir, top.unknown, p.dirStack[:n-1]
+		} else {
+			p.cwdUnknown = true
+		}
+		return
+	case "pushd":
+		p.dirStack = append(p.dirStack, dirEntry{p.Cwd, p.cwdUnknown})
 	}
+	args = skipFlags(args[1:], nil) // cd -P dir, cd -L dir
+	switch {
+	case len(args) == 0 && name == "cd":
+		p.Cwd, p.cwdUnknown = p.Home, false
+	case len(args) == 0, args[0].dynamic, args[0].s == "-", strings.HasPrefix(args[0].s, "+"):
+		p.cwdUnknown = true // cd -, pushd +1, cd $DIR
+	default:
+		p.Cwd = p.abs(args[0].s)
+	}
+}
+
+// isolated выполняет f в копии контекста shell: cd внутри f не меняет
+// папку для следующих команд. Так ведут себя ( … ), $( … ), конвейер,
+// фоновая команда и дочерний shell (bash -c).
+func (p *Policy) isolated(f func()) {
+	cwd, unknown := p.Cwd, p.cwdUnknown
+	stack := slices.Clone(p.dirStack) // копия: f может дописать в общий массив
+	f()
+	p.Cwd, p.cwdUnknown, p.dirStack = cwd, unknown, stack
 }
 
 func (p *Policy) checkScript(src string, depth int) Verdict {
@@ -45,16 +78,64 @@ func (p *Policy) checkScript(src string, depth int) Verdict {
 	if err != nil {
 		return p.soft("parse-error", fmt.Sprintf("не удалось разобрать команду (%v)", err), "Перепиши команду в простом синтаксисе bash")
 	}
+	p.scanGitEnv(file)
+	return p.checkNode(file, depth)
+}
+
+// checkNode обходит дерево команд по порядку выполнения. Части, которые
+// shell выполняет в отдельном процессе, проверяются в копии контекста
+// (isolated): их cd не влияет на команды после них.
+func (p *Policy) checkNode(node syntax.Node, depth int) Verdict {
 	v := allowVerdict
+	child := func(nodes ...syntax.Node) {
+		p.isolated(func() {
+			for _, n := range nodes {
+				v = worst(v, p.checkNode(n, depth))
+			}
+		})
+	}
 	// syntax.Walk обходит всё дерево, включая $(...), <(...), тела
-	// функций, циклов и условий. Функция возвращает true — «идти глубже».
-	syntax.Walk(file, func(node syntax.Node) bool {
+	// функций, циклов и условий. Функция возвращает true — «идти глубже»,
+	// false — «это поддерево мы уже проверили сами».
+	syntax.Walk(node, func(node syntax.Node) bool {
 		switch n := node.(type) {
+		case *syntax.Stmt:
+			if n.Background || n.Coprocess {
+				inner := *n // копия без флага «&», иначе попадём сюда снова
+				inner.Background, inner.Coprocess = false, false
+				child(&inner)
+				return false
+			}
+		case *syntax.Subshell:
+			child(stmtNodes(n.Stmts)...)
+			return false
+		case *syntax.CmdSubst:
+			child(stmtNodes(n.Stmts)...)
+			return false
+		case *syntax.ProcSubst:
+			child(stmtNodes(n.Stmts)...)
+			return false
+		case *syntax.FuncDecl:
+			// Тело функции проверяем, но выполнится оно только при вызове.
+			// Если в нём есть cd, вызов функции делает папку неизвестной.
+			child(n.Body)
+			if changesDir(n.Body) && n.Name != nil {
+				if p.dirFuncs == nil {
+					p.dirFuncs = map[string]bool{}
+				}
+				p.dirFuncs[n.Name.Value] = true
+			}
+			return false
 		case *syntax.CallExpr:
 			v = worst(v, p.checkCall(n, depth))
 		case *syntax.BinaryCmd:
 			if n.Op == syntax.Pipe || n.Op == syntax.PipeAll {
 				v = worst(v, p.checkPipe(n))
+				// В bash каждая часть конвейера — отдельный процесс.
+				for _, s := range pipeline(n) {
+					child(s)
+				}
+				return false
 			}
 		case *syntax.Redirect:
 			v = worst(v, p.checkRedirect(n))
@@ -62,6 +143,79 @@ func (p *Policy) checkScript(src string, depth int) Verdict {
 		return true
 	})
 	return v
+}
+
+func stmtNodes(stmts []*syntax.Stmt) []syntax.Node {
+	out := make([]syntax.Node, len(stmts))
+	for i, s := range stmts {
+		out[i] = s
+	}
+	return out
+}
+
+// changesDir — есть ли в теле функции cd, pushd или popd.
+func changesDir(body syntax.Node) bool {
+	found := false
+	syntax.Walk(body, func(node syntax.Node) bool {
+		if c, ok := node.(*syntax.CallExpr); ok && len(c.Args) > 0 {
+			switch wordValue(c.Args[0]).s {
+			case "cd", "pushd", "popd":
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+// pipeline раскладывает конвейер a | b | c на отдельные команды.
+func pipeline(b *syntax.BinaryCmd) []*syntax.Stmt {
+	var stmts []*syntax.Stmt
+	var flatten func(s *syntax.Stmt)
+	flatten = func(s *syntax.Stmt) {
+		if bc, ok := s.Cmd.(*syntax.BinaryCmd); ok && (bc.Op == syntax.Pipe || bc.Op == syntax.PipeAll) {
+			flatten(bc.X)
+			flatten(bc.Y)
+			return
+		}
+		stmts = append(stmts, s)
+	}
+	flatten(b.X)
+	flatten(b.Y)
+	return stmts
+}
+
+// gitEnvVars — переменные окружения, которые меняют репозиторий или
+// конфигурацию git: с ними назначение push не определить по файлам.
+func isGitEnvVar(name string) bool {
+	switch name {
+	case "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_NAMESPACE":
+		return true
+	}
+	return strings.HasPrefix(name, "GIT_CONFIG")
+}
+
+// scanGitEnv отмечает, что в команде задаются переменные GIT_DIR,
+// GIT_CONFIG_* и т.п. — как присваивание (X=1 git …, export X=1) или
+// через env X=1 git ….
+func (p *Policy) scanGitEnv(file *syntax.File) {
+	syntax.Walk(file, func(node syntax.Node) bool {
+		switch n := node.(type) {
+		case *syntax.Assign:
+			if n.Name != nil && isGitEnvVar(n.Name.Value) {
+				p.gitEnv = true
+			}
+		case *syntax.Word:
+			if len(n.Parts) > 0 {
+				if lit, ok := n.Parts[0].(*syntax.Lit); ok {
+					if name, _, found := strings.Cut(lit.Value, "="); found && isGitEnvVar(name) {
+						p.gitEnv = true
+					}
+				}
+			}
+		}
+		return !p.gitEnv
+	})
 }
 
 // parseShell разбирает команду как bash, а если не вышло — как zsh: на macOS
@@ -156,13 +310,39 @@ var downloaders = map[string]bool{"curl": true, "wget": true}
 // stripWrappers убирает sudo, env, nohup, time, timeout... и возвращает
 // «настоящую» команду. viaXargs=true, если аргументы придут из xargs.
 func stripWrappers(args []word) (rest []word, viaXargs bool) {
+	rest, viaXargs, _ = stripWrappersDir(args)
+	return rest, viaXargs
+}
+
+// stripWrappersDir — то же, что stripWrappers, и ещё папка, в которой
+// обёртка запустит команду: env -C dir cmd, sudo -D dir cmd (nil — текущая).
+func stripWrappersDir(args []word) (rest []word, viaXargs bool, chdir *word) {
 	for len(args) > 0 {
 		name := filepath.Base(args[0].s)
 		switch name {
 		case "sudo", "doas":
-			args = skipFlags(args[1:], map[string]bool{"-u": true, "-g": true, "-C": true, "-D": true})
+			withValue := map[string]bool{"-u": true, "-g": true, "-C": true, "-D": true, "--chdir": true}
+			args = args[1:]
+			for len(args) > 0 && strings.HasPrefix(args[0].s, "-") && args[0].s != "-" {
+				flag := args[0].s
+				args = args[1:]
+				if flag == "--" {
+					break // break выходит из for, а не из switch
+				}
+				if withValue[flag] && len(args) > 0 {
+					if flag == "-D" || flag == "--chdir" {
+						d := args[0]
+						chdir = &d
+					}
+					args = args[1:]
+				}
+			}
 		case "env":
-			args = stripEnv(args[1:])
+			var d *word
+			args, d = stripEnv(args[1:])
+			if d != nil {
+				chdir = d
+			}
 		case "command", "builtin", "exec", "nohup", "time", "stdbuf":
 			args = skipFlags(args[1:], nil)
 		case "nice":
@@ -176,44 +356,59 @@ func stripWrappers(args []word) (rest []word, viaXargs bool) {
 			viaXargs = true
 			args = skipFlags(args[1:], map[string]bool{"-I": true, "-n": true, "-P": true, "-L": true, "-d": true, "-s": true, "-E": true})
 		default:
-			return args, viaXargs
+			return args, viaXargs, chdir
 		}
 	}
-	return args, viaXargs
+	return args, viaXargs, chdir
 }
 
 // stripEnv пропускает опции и присваивания команды env и возвращает
 // саму запускаемую команду: env -i -u NAME -C dir VAR=1 cmd args…
-func stripEnv(args []word) []word {
+// chdir — папка из -C/--chdir (nil, если её нет).
+func stripEnv(args []word) (rest []word, chdir *word) {
 	for len(args) > 0 {
 		a := args[0].s
 		switch {
 		case a == "--":
-			return args[1:]
-		case a == "-u" || a == "--unset" || a == "-C" || a == "--chdir":
+			return args[1:], chdir
+		case a == "-C" || a == "--chdir":
 			if len(args) < 2 {
-				return nil
+				return nil, chdir
+			}
+			d := args[1]
+			chdir = &d
+			args = args[2:]
+		case strings.HasPrefix(a, "--chdir="):
+			chdir = &word{s: strings.TrimPrefix(a, "--chdir="), dynamic: args[0].dynamic}
+			args = args[1:]
+		case a == "-u" || a == "--unset":
+			if len(args) < 2 {
+				return nil, chdir
 			}
 			args = args[2:]
 		case a == "-S" || a == "--split-string":
 			// env -S "cmd arg…": команда записана одной строкой.
 			if len(args) < 2 {
-				return nil
+				return nil, chdir
 			}
 			var split []word
 			for _, f := range strings.Fields(args[1].s) {
 				split = append(split, word{s: f, dynamic: args[1].dynamic})
 			}
-			return stripEnv(append(split, args[2:]...))
+			rest, d := stripEnv(append(split, args[2:]...))
+			if d != nil {
+				chdir = d
+			}
+			return rest, chdir
 		case strings.HasPrefix(a, "-") && a != "-":
 			args = args[1:] // -i, --ignore-environment, --unset=NAME, -uNAME …
 		case strings.Contains(a, "="):
 			args = args[1:] // VAR=value
 		default:
-			return args
+			return args, chdir
 		}
 	}
-	return args
+	return args, chdir
 }
 
 func skipFlags(args []word, withValue map[string]bool) []word {
@@ -239,26 +434,48 @@ func strs(ws []word) []string {
 }
 
 func (p *Policy) checkCall(c *syntax.CallExpr, depth int) Verdict {
-	args, viaXargs := stripWrappers(callWords(c))
+	args, viaXargs, chdir := stripWrappersDir(callWords(c))
 	if len(args) == 0 {
 		return allowVerdict // только присваивания VAR=x
 	}
+	if chdir == nil {
+		return p.checkArgs(args, viaXargs, depth)
+	}
+	// env -C dir cmd: команда работает в dir, а папка shell не меняется.
+	var v Verdict
+	p.isolated(func() {
+		p.trackCd("cd", []word{{s: "cd"}, *chdir})
+		v = p.checkArgs(args, viaXargs, depth)
+	})
+	return v
+}
+
+func (p *Policy) checkArgs(args []word, viaXargs bool, depth int) Verdict {
 	name := filepath.Base(args[0].s)
 	v := allowVerdict
 
 	// Любое упоминание файла с секретами в аргументах — кроме команд,
 	// которые смотрят только на сам файл, а не на его содержимое.
+	// Проверяем итоговые пути: cat .en[v] и ссылка на .env — тоже .env.
 	if !metadataOnly(name, args[1:]) {
 		for _, a := range args[1:] {
-			if !a.dynamic {
-				v = worst(v, p.checkSensitive(p.abs(a.s)))
+			switch {
+			case a.dynamic:
+			case strings.HasPrefix(a.s, "-"):
+				v = worst(v, p.checkSensitive(p.abs(a.s))) // --env-file=.env
+			default:
+				for _, t := range p.targets(a) {
+					v = worst(v, p.checkSensitive(t))
+				}
 			}
 		}
 	}
 
 	switch {
-	case name == "cd" || name == "pushd":
-		p.trackCd(args)
+	case name == "cd" || name == "pushd" || name == "popd":
+		p.trackCd(name, args)
+	case p.dirFuncs[name]:
+		p.cwdUnknown = true // функция из этой же команды делает cd
 	case shells[name]:
 		v = worst(v, p.checkShellCall(args, depth))
 	case name == "eval":
@@ -271,6 +488,10 @@ func (p *Policy) checkCall(c *syntax.CallExpr, depth int) Verdict {
 		// Откат перезаписывает файлы проекта, в том числе правки самого
 		// пользователя, — это решает человек, а не агент.
 		v = worst(v, Verdict{Ask, "holdfast-rollback", "откат перезапишет файлы проекта — нужно подтверждение пользователя"})
+	case name == "holdfast" && changesHoldfastSetup(args[1:]):
+		// holdfast sync после правки CLAUDE.md может снять запреты — как и
+		// правку holdfast.toml, это решает пользователь.
+		v = worst(v, Verdict{Ask, "holdfast-config", "команда меняет настройки защиты Holdfast — нужно подтверждение пользователя"})
 	case name == "npm" || name == "pnpm" || name == "yarn" || name == "bun":
 		if hasArg(args[1:], "publish") {
 			v = worst(v, p.soft("npm-publish", name+" publish необратимо публикует пакет",
@@ -285,15 +506,36 @@ func (p *Policy) checkCall(c *syntax.CallExpr, depth int) Verdict {
 	return v
 }
 
-// isHoldfastRollback распознаёт `holdfast [-C dir] guard rollback …`.
-func isHoldfastRollback(args []word) bool {
+// holdfastArgs пропускает глобальные опции holdfast (-C dir, --dir dir).
+func holdfastArgs(args []word) []word {
 	for len(args) > 0 && strings.HasPrefix(args[0].s, "-") {
 		if (args[0].s == "-C" || args[0].s == "--dir") && len(args) > 1 {
 			args = args[1:]
 		}
 		args = args[1:]
 	}
+	return args
+}
+
+// isHoldfastRollback распознаёт `holdfast [-C dir] guard rollback …`.
+func isHoldfastRollback(args []word) bool {
+	args = holdfastArgs(args)
 	return len(args) >= 2 && args[0].s == "guard" && args[1].s == "rollback"
+}
+
+// changesHoldfastSetup — команда holdfast, которая пишет holdfast.toml или
+// .claude/settings.json: init, sync (кроме --dry-run), guard install.
+func changesHoldfastSetup(args []word) bool {
+	args = holdfastArgs(args)
+	switch {
+	case len(args) == 0:
+		return false
+	case args[0].s == "init":
+		return true
+	case args[0].s == "sync":
+		return !hasArg(args, "--dry-run")
+	}
+	return len(args) >= 2 && args[0].s == "guard" && args[1].s == "install"
 }
 
 // metadataCommands не читают содержимое файла: существует ли он, размер,
@@ -307,37 +549,60 @@ var metadataGitCommands = map[string]bool{"check-ignore": true, "ls-files": true
 
 func metadataOnly(name string, args []word) bool {
 	if name == "git" {
-		sub, _, _, _ := gitSubcommand(args, "", false)
-		return metadataGitCommands[sub]
+		return metadataGitCommands[parseGit(args, "", false).sub]
 	}
 	return metadataCommands[name]
 }
 
-// gitSubcommand пропускает глобальные опции git (-C dir, -c key=val, ...)
-// и возвращает подкоманду, её аргументы и папку, в которой выполнится git.
-func gitSubcommand(args []word, dir string, unknown bool) (sub string, rest []word, outDir string, dirUnknown bool) {
+// gitCall — вызов git после разбора глобальных опций.
+type gitCall struct {
+	sub        string // подкоманда: push, reset, …
+	rest       []word // её аргументы
+	dir        string // папка, где выполнится git (cd и -C)
+	dirUnknown bool   // папку или репозиторий не определить: cd $X, --git-dir
+	config     []word // значения -c key=val; --config-env — dynamic
+}
+
+// parseGit пропускает глобальные опции git (-C dir, -c key=val, ...)
+// и запоминает те, что влияют на папку и конфигурацию.
+func parseGit(args []word, dir string, unknown bool) gitCall {
+	g := gitCall{dir: dir, dirUnknown: unknown}
 	for len(args) > 0 && strings.HasPrefix(args[0].s, "-") {
-		opt := args[0].s
-		if (opt == "-C" || opt == "-c" || opt == "--git-dir" || opt == "--work-tree") && len(args) > 1 {
-			if opt == "-C" {
-				switch val := args[1]; {
-				case val.dynamic:
-					unknown = true
-				case filepath.IsAbs(val.s):
-					dir, unknown = val.s, false
-				default:
-					dir = filepath.Join(dir, val.s)
-				}
+		opt, val, hasVal := strings.Cut(args[0].s, "=")
+		takesValue := opt == "-C" || opt == "-c" || opt == "--git-dir" || opt == "--work-tree" ||
+			opt == "--namespace" || opt == "--config-env"
+		if takesValue && !hasVal {
+			if len(args) < 2 {
+				break
 			}
-			args = args[2:]
-			continue
+			args = args[1:]
+			val = args[0].s
 		}
+		dynamic := args[0].dynamic
 		args = args[1:]
+		switch opt {
+		case "-C":
+			switch {
+			case dynamic:
+				g.dirUnknown = true
+			case filepath.IsAbs(val):
+				g.dir, g.dirUnknown = val, false
+			default:
+				g.dir = filepath.Join(g.dir, val)
+			}
+		case "-c":
+			g.config = append(g.config, word{s: val, dynamic: dynamic})
+		case "--config-env":
+			// Значение берётся из переменной окружения — заранее неизвестно.
+			g.config = append(g.config, word{s: val, dynamic: true})
+		case "--git-dir", "--work-tree", "--namespace":
+			g.dirUnknown = true
+		}
 	}
-	if len(args) == 0 {
-		return "", nil, dir, unknown
+	if len(args) > 0 {
+		g.sub, g.rest = args[0].s, args[1:]
 	}
-	return args[0].s, args[1:], dir, unknown
+	return g
 }
 
 func hasArg(args []word, s string) bool {
@@ -364,7 +629,8 @@ func (p *Policy) checkShellCall(args []word, depth int) Verdict {
 	for i := 1; i < len(args); i++ {
 		a := args[i]
 		if strings.HasPrefix(a.s, "-") && !strings.HasPrefix(a.s, "--") && strings.Contains(a.s, "c") && i+1 < len(args) {
-			v = worst(v, p.checkScript(args[i+1].s, depth+1))
+			// Дочерний shell — отдельный процесс: его cd не меняет нашу папку.
+			p.isolated(func() { v = worst(v, p.checkScript(args[i+1].s, depth+1)) })
 			i++
 		}
 	}
@@ -438,21 +704,8 @@ func readsProgramFromStdin(name string, args []word) bool {
 
 // checkPipe ищет «скачать | выполнить»: curl ... | sh, wget -O- | sudo bash.
 func (p *Policy) checkPipe(b *syntax.BinaryCmd) Verdict {
-	var stmts []*syntax.Stmt
-	var flatten func(s *syntax.Stmt)
-	flatten = func(s *syntax.Stmt) {
-		if bc, ok := s.Cmd.(*syntax.BinaryCmd); ok && (bc.Op == syntax.Pipe || bc.Op == syntax.PipeAll) {
-			flatten(bc.X)
-			flatten(bc.Y)
-			return
-		}
-		stmts = append(stmts, s)
-	}
-	flatten(b.X)
-	flatten(b.Y)
-
 	downloaded := false
-	for _, s := range stmts {
+	for _, s := range pipeline(b) {
 		if downloaded {
 			if c, ok := s.Cmd.(*syntax.CallExpr); ok {
 				args, _ := stripWrappers(callWords(c))
@@ -483,10 +736,13 @@ func (p *Policy) checkRedirect(r *syntax.Redirect) Verdict {
 	if w.dynamic || w.s == "/dev/null" {
 		return allowVerdict
 	}
-	abs := p.abs(w.s)
-	v := p.checkSensitive(abs)
-	if r.Op != syntax.RdrIn {
-		v = worst(v, p.checkWritePath(abs))
+	v := allowVerdict
+	for _, abs := range p.targets(w) {
+		v = worst(v, p.checkSensitive(abs))
+		if r.Op != syntax.RdrIn {
+			p.noteGitConfigWrite(abs)
+			v = worst(v, p.checkWritePath(abs))
+		}
 	}
 	return v
 }
@@ -497,33 +753,56 @@ var mutating = map[string]bool{
 	"rmdir": true, "chmod": true, "chown": true, "ln": true, "unlink": true, "shred": true,
 }
 
+// removers удаляют, переносят или меняют права целых папок: для них
+// служебный файл внутри папки — тоже цель (mv .claude x, chmod -R .holdfast).
+var removers = map[string]bool{
+	"rm": true, "mv": true, "rmdir": true, "chmod": true, "chown": true, "shred": true, "unlink": true,
+}
+
 func (p *Policy) checkMutatingPaths(name string, args []word) Verdict {
-	var paths []word
+	v := allowVerdict
+	var words []word
+	var paths []string
 	switch {
-	case mutating[name]:
-		paths = nonFlags(args)
-	case name == "cp" || name == "rsync" || name == "install":
-		if nf := nonFlags(args); len(nf) > 0 {
-			paths = nf[len(nf)-1:] // меняется только место назначения
+	case name == "cp" || name == "rsync" || name == "install" || name == "mv" || name == "ln":
+		// Куда на самом деле попадут файлы: cp a.txt dir/ → dir/a.txt.
+		dests, tooMany := p.copyTargets(name, args)
+		paths = dests
+		if tooMany {
+			v = p.soft("copy-too-many", fmt.Sprintf("%s копирует больше %d файлов — проверить их все не удалось", name, maxScanFiles),
+				"Копируй по частям, по одной папке")
 		}
+		if name == "mv" || name == "ln" {
+			// mv удаляет источник; ln создаёт ещё одно имя для файла, и запись
+			// через жёсткую ссылку изменит оригинал.
+			words = nonFlags(args)
+		}
+	case mutating[name]:
+		words = nonFlags(args)
 	case name == "sed" || name == "perl":
 		for _, a := range args {
 			if strings.HasPrefix(a.s, "-i") || a.s == "--in-place" || (name == "perl" && strings.HasPrefix(a.s, "-") && strings.Contains(a.s, "i")) {
-				paths = nonFlags(args)
+				words = nonFlags(args)
 				break
 			}
 		}
 	case name == "dd":
 		for _, a := range args {
 			if strings.HasPrefix(a.s, "of=") {
-				paths = append(paths, word{s: strings.TrimPrefix(a.s, "of="), dynamic: a.dynamic})
+				words = append(words, word{s: strings.TrimPrefix(a.s, "of="), dynamic: a.dynamic})
 			}
 		}
 	}
-	v := allowVerdict
-	for _, a := range paths {
+	for _, a := range words {
 		if !a.dynamic {
-			v = worst(v, p.checkWritePath(p.abs(a.s)))
+			paths = append(paths, p.targets(a)...)
+		}
+	}
+	for _, abs := range paths {
+		p.noteGitConfigWrite(abs)
+		v = worst(v, p.checkWritePath(abs))
+		if removers[name] && p.containsService(abs) {
+			v = worst(v, p.serviceVerdict(abs))
 		}
 	}
 	return v
@@ -583,38 +862,11 @@ func (p *Policy) checkRm(args []word, viaXargs bool) Verdict {
 			}
 			continue
 		}
-		abs := p.abs(t.s)
-		// Для glob (/*, ~/*, build/*.o) проверяем папку до первого '*'.
-		base := abs
-		if i := strings.IndexAny(abs, "*?["); i >= 0 {
-			base = filepath.Dir(abs[:i] + "x")
+		for _, base := range p.rmBases(t, recursive) {
+			if stop := p.checkRmTarget(base, recursive, &v, &inProject, &otherCount); stop.Decision != Allow {
+				return stop
+			}
 		}
-
-		switch {
-		case recursive && (base == "/" || base == filepath.Dir(base)):
-			return Verdict{Deny, "rm-root", "rm -r на корень файловой системы запрещён"}
-		case recursive && (base == p.Home || isWithin(base, p.Home)):
-			return Verdict{Deny, "rm-home", "rm -r на домашнюю папку запрещён. Удаляй конкретные файлы внутри проекта"}
-		case recursive && (base == p.Root || isWithin(base, p.Root)):
-			// и сам репозиторий, и любая папка, которая его содержит
-			return Verdict{Deny, "rm-repo-root", "rm -r на весь репозиторий запрещён. Удаляй конкретные файлы или папки"}
-		case !p.cfg.Strict() && !p.inRepo(base) && p.isTempPath(base):
-			// временные файлы вне проекта: удаляем без вопросов.
-			// Проверка идёт после repo-root: проект сам может лежать в /tmp.
-			continue
-		case recursive && !p.inRepo(base):
-			return Verdict{Deny, "rm-outside-repo", fmt.Sprintf("rm -r вне репозитория (%s) запрещён. Работай только с файлами проекта %s", base, p.Root)}
-		case !p.cfg.Strict() && !p.inRepo(base) && p.inOtherRepo(base):
-			// Отдельные файлы в другом git-репозитории (агент работает и там):
-			// можно, но массовое удаление — нет, снапшот проекта их не защищает.
-			otherCount += p.countTargets(abs, false, p.cfg.MaxDeletes+1-otherCount)
-			continue
-		case !p.inRepo(base):
-			v = worst(v, p.soft("rm-outside-repo", fmt.Sprintf("удаление файла вне репозитория (%s)", abs),
-				"Удаляй только файлы проекта, отдельные файлы в git-репозиториях или временные файлы в /tmp"))
-			continue
-		}
-		inProject = append(inProject, abs)
 	}
 	v = worst(v, p.deleteInProject("удаление (rm)", inProject, recursive, nil))
 	if otherCount > p.cfg.MaxDeletes {
@@ -622,6 +874,64 @@ func (p *Policy) checkRm(args []word, viaXargs bool) Verdict {
 			"Снапшот проекта эти файлы не защищает — удаляй по несколько файлов за раз"))
 	}
 	return v
+}
+
+// rmBases — что на самом деле удалит rm для одного аргумента.
+// «Всё в папке» (/*, ~/*, dir/*) проверяется как сама папка: rm -rf * в
+// корне проекта — это удаление проекта. Шаблон с частью имени (migr*,
+// *.png) раскрывается в конкретные пути, как это сделает shell.
+func (p *Policy) rmBases(t word, recursive bool) []string {
+	var out []string
+	glob := hasGlob(t)
+	for _, form := range braceForms(t) { // rm -rf {src,dist} — две цели
+		abs := p.abs(form)
+		i := strings.IndexAny(abs, "*?[")
+		if i < 0 || !glob {
+			out = append(out, abs)
+			continue
+		}
+		dir := filepath.Dir(abs[:i] + "x")
+		comp, _, _ := strings.Cut(strings.TrimPrefix(abs[len(dir):], string(filepath.Separator)), string(filepath.Separator))
+		switch m := shellGlob(abs); {
+		case comp == "*" && recursive:
+			out = append(out, dir)
+		case len(m) > 0:
+			out = append(out, m...)
+		default:
+			out = append(out, abs)
+		}
+	}
+	return out
+}
+
+// checkRmTarget проверяет одну цель rm. Возвращает запрет, если он
+// окончательный; иначе копит результат в v, inProject и otherCount
+// (указатели: функция меняет переменные вызывающей стороны).
+func (p *Policy) checkRmTarget(base string, recursive bool, v *Verdict, inProject *[]string, otherCount *int) Verdict {
+	switch {
+	case recursive && (base == "/" || base == filepath.Dir(base)):
+		return Verdict{Deny, "rm-root", "rm -r на корень файловой системы запрещён"}
+	case recursive && (base == p.Home || isWithin(base, p.Home)):
+		return Verdict{Deny, "rm-home", "rm -r на домашнюю папку запрещён. Удаляй конкретные файлы внутри проекта"}
+	case recursive && (base == p.Root || isWithin(base, p.Root)):
+		// и сам репозиторий, и любая папка, которая его содержит
+		return Verdict{Deny, "rm-repo-root", "rm -r на весь репозиторий запрещён. Удаляй конкретные файлы или папки"}
+	case !p.cfg.Strict() && !p.inRepo(base) && p.isTempPath(base):
+		// временные файлы вне проекта: удаляем без вопросов.
+		// Проверка идёт после repo-root: проект сам может лежать в /tmp.
+	case recursive && !p.inRepo(base):
+		return Verdict{Deny, "rm-outside-repo", fmt.Sprintf("rm -r вне репозитория (%s) запрещён. Работай только с файлами проекта %s", base, p.Root)}
+	case !p.cfg.Strict() && !p.inRepo(base) && p.inOtherRepo(base):
+		// Отдельные файлы в другом git-репозитории (агент работает и там):
+		// можно, но массовое удаление — нет, снапшот проекта их не защищает.
+		*otherCount += p.countTargets(base, false, p.cfg.MaxDeletes+1-*otherCount)
+	case !p.inRepo(base):
+		*v = worst(*v, p.soft("rm-outside-repo", fmt.Sprintf("удаление файла вне репозитория (%s)", base),
+			"Удаляй только файлы проекта, отдельные файлы в git-репозиториях или временные файлы в /tmp"))
+	default:
+		*inProject = append(*inProject, base)
+	}
+	return allowVerdict
 }
 
 // inOtherRepo — путь внутри какого-то git-репозитория (не проекта). Репозиторий
@@ -642,8 +952,8 @@ func (p *Policy) countTargets(abs string, recursive bool, limit int) int {
 	}
 	matches := []string{abs}
 	if strings.ContainsAny(abs, "*?[") {
-		m, err := filepath.Glob(abs)
-		if err != nil || len(m) == 0 {
+		m := shellGlob(abs)
+		if len(m) == 0 {
 			return 1
 		}
 		matches = m
@@ -679,13 +989,21 @@ func (p *Policy) countTargets(abs string, recursive bool, limit int) int {
 // checkGit: push --force и reset --hard — запрет, обычный push — спросить.
 func (p *Policy) checkGit(args []word) Verdict {
 	// Папка, где выполнится git: текущая (с учётом cd) и -C из команды.
-	sub, rest, dir, dirUnknown := gitSubcommand(args, p.Cwd, p.cwdUnknown)
+	g := parseGit(args, p.Cwd, p.cwdUnknown)
+	g.dir = p.abs(g.dir)
+	sub, rest, dir, dirUnknown := g.sub, g.rest, g.dir, g.dirUnknown
 	if sub == "" {
 		return allowVerdict
 	}
 	switch sub {
 	case "push":
-		return p.checkPush(rest, p.abs(dir), dirUnknown)
+		return p.checkPush(g)
+	case "checkout", "switch", "branch":
+		p.trackBranch(g)
+	case "config", "remote":
+		if changesGitConfig(sub, rest) {
+			p.gitConfigChanged = true
+		}
 	case "update-ref":
 		for _, w := range rest {
 			if strings.HasPrefix(w.s, "refs/holdfast") {
@@ -718,101 +1036,6 @@ func (p *Policy) checkGit(args []word) Verdict {
 				"Удаляй конкретные файлы или используй git clean -f без -x")
 		case force:
 			return p.checkGitClean(p.abs(dir), dirUnknown)
-		}
-	}
-	return allowVerdict
-}
-
-// checkPush: force-push, удаление веток и теги запрещены в любом репозитории.
-// Защищённые ветки (main) — настройка проекта: она действует только для
-// репозитория проекта, а не для любого репозитория на диске, где агент
-// выполнил cd. Ветку читаем у того репозитория, где реально идёт push.
-func (p *Policy) checkPush(args []word, dir string, dirUnknown bool) Verdict {
-	withValue := map[string]bool{"--repo": true, "-o": true, "--push-option": true, "--receive-pack": true, "--exec": true}
-	var positional []string
-	deleting, tags, all := false, false, false
-	for i := 0; i < len(args); i++ {
-		s := args[i].s
-		short := strings.HasPrefix(s, "-") && !strings.HasPrefix(s, "--")
-		switch {
-		case s == "--force" || strings.HasPrefix(s, "--force-with-lease") || s == "--force-if-includes" || s == "--mirror" ||
-			(short && strings.Contains(s, "f")) || (strings.HasPrefix(s, "+") && len(s) > 1):
-			return Verdict{Deny, "git-push-force", "git push --force переписывает историю на сервере. Сделай обычный push; если история разошлась — создай новую ветку и запушь её"}
-		case s == "--delete" || s == "-d":
-			deleting = true
-		case s == "--tags" || s == "--follow-tags":
-			tags = true
-		case s == "--all" || s == "--branches":
-			all = true
-		case withValue[s]:
-			i++
-		case strings.HasPrefix(s, "-"):
-		default:
-			positional = append(positional, s)
-		}
-	}
-	if p.cfg.Strict() {
-		return Verdict{Ask, "git-push", "git push отправляет код на сервер — нужно подтверждение пользователя"}
-	}
-
-	var refspecs []string
-	if len(positional) > 1 {
-		refspecs = positional[1:]
-	}
-	for _, r := range refspecs {
-		if strings.HasPrefix(r, ":") {
-			deleting = true
-		}
-	}
-	switch {
-	case deleting:
-		return Verdict{Deny, "git-push-delete", "удаление веток на сервере необратимо. Сообщи пользователю, какую ветку нужно удалить"}
-	case tags:
-		return Verdict{Deny, "git-push-tags", "push тегов обычно запускает релиз. Создай тег локально и предложи пользователю его запушить"}
-	case all:
-		return Verdict{Deny, "git-push-all", "push всех веток сразу запрещён. Запушь только свою рабочую ветку: git push origin <ветка>"}
-	}
-
-	if dirUnknown {
-		return p.soft("git-push-branch", "не удалось определить, из какого репозитория push (cd на переменную)",
-			"Укажи путь явно: git -C <путь> push origin <ветка>")
-	}
-	repo := findGitRoot(dir)
-	if repo == "" {
-		return allowVerdict // не git-репозиторий: git сам сообщит об ошибке
-	}
-	projectRepo := isWithin(p.Root, repo) || isWithin(repo, p.Root)
-
-	cur := currentBranch(repo)
-	var targets []string
-	if len(refspecs) == 0 {
-		targets = []string{cur}
-	}
-	for _, r := range refspecs {
-		dst := r
-		if _, after, ok := strings.Cut(r, ":"); ok {
-			dst = after
-		}
-		if dst == "HEAD" {
-			dst = cur
-		}
-		if strings.HasPrefix(dst, "refs/tags/") || (dst != "" && refExists(repo, "refs/tags/"+dst)) {
-			return Verdict{Deny, "git-push-tags", "push тегов обычно запускает релиз. Создай тег локально и предложи пользователю его запушить"}
-		}
-		targets = append(targets, strings.TrimPrefix(dst, "refs/heads/"))
-	}
-	if !projectRepo {
-		return allowVerdict // правила веток проекта к чужим репозиториям не применяем
-	}
-	for _, t := range targets {
-		if t == "" {
-			return Verdict{Deny, "git-push-branch", "не удалось определить ветку (detached HEAD?). Укажи ветку явно: git push origin <ветка>"}
-		}
-		for _, protected := range p.cfg.ProtectedBranches {
-			if t == protected {
-				return Verdict{Deny, "git-push-protected", fmt.Sprintf(
-					"push в защищённую ветку %s запрещён. Создай рабочую ветку (git switch -c <имя>), запушь её (git push -u origin <имя>) и предложи pull request", t)}
-			}
 		}
 	}
 	return allowVerdict
