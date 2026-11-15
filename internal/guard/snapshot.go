@@ -782,3 +782,30 @@ func removeEmptyParents(root, dir string) {
 		dir = filepath.Dir(dir)
 	}
 }
+
+// AllRefs — все ссылки Holdfast во всех рабочих деревьях репозитория:
+// точки восстановления и резервные копии перед откатом.
+func (g *Git) AllRefs() ([]string, error) {
+	out, err := g.run(nil, nil, "for-each-ref", "--format=%(refname)", SnapshotRefPrefix, BackupRefPrefix)
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(out), nil
+}
+
+// PurgeRefs удаляет все ссылки Holdfast (holdfast guard uninstall --purge).
+// Сами объекты git удалит позже обычная сборка мусора (git gc).
+func (g *Git) PurgeRefs() (int, error) {
+	refs, err := g.AllRefs()
+	if err != nil || len(refs) == 0 {
+		return 0, err
+	}
+	var b strings.Builder
+	for _, r := range refs {
+		fmt.Fprintf(&b, "delete %s\n", r)
+	}
+	if _, err := g.run(nil, strings.NewReader(b.String()), "update-ref", "--stdin"); err != nil {
+		return 0, err
+	}
+	return len(refs), nil
+}

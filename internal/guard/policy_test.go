@@ -591,6 +591,8 @@ func TestHoldfastSelfProtection(t *testing.T) {
 		"holdfast -C . guard rollback --yes":            Ask,
 		"holdfast --dir . guard rollback":               Ask,
 		"holdfast -C . guard list":                      Allow,
+		"holdfast guard uninstall":                      Ask,
+		"holdfast doctor":                               Allow,
 	} {
 		if got := p.CheckCommand(cmd); got.Decision != want {
 			t.Errorf("%q = %s (%s), want %s", cmd, got.Decision, got.Rule, want)

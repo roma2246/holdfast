@@ -71,13 +71,14 @@ func (a *app) rootCmd() *cobra.Command {
 
   holdfast lint    проверяет CLAUDE.md / AGENTS.md / .cursorrules
   holdfast guard   контролирует, что агент делает с файлами и терминалом
-  holdfast sync    превращает запреты из CLAUDE.md в политики guard`,
+  holdfast sync    превращает запреты из CLAUDE.md в политики guard
+  holdfast doctor  проверяет, что хуки подключены и точки восстановления создаются`,
 		Version:       a.version,
 		SilenceUsage:  true, // не печатать справку при каждой ошибке
 		SilenceErrors: true, // ошибки печатаем сами в Execute
 	}
 	root.PersistentFlags().StringVarP(&a.dir, "dir", "C", ".", "папка репозитория")
-	root.AddCommand(a.lintCmd(), a.initCmd(), a.syncCmd(), a.guardCmd())
+	root.AddCommand(a.lintCmd(), a.initCmd(), a.syncCmd(), a.guardCmd(), a.doctorCmd())
 	return root
 }
 

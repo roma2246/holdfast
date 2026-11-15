@@ -23,7 +23,7 @@ func (a *app) guardCmd() *cobra.Command {
 		Use:   "guard",
 		Short: "Предохранитель: хук Claude Code, точки восстановления, журнал и откат",
 	}
-	cmd.AddCommand(a.guardInstallCmd(), a.guardCheckCmd(), a.guardCheckpointCmd(), a.guardStartCmd(),
+	cmd.AddCommand(a.guardInstallCmd(), a.guardUninstallCmd(), a.guardCheckCmd(), a.guardCheckpointCmd(), a.guardStartCmd(),
 		a.guardListCmd(), a.guardDiffCmd(), a.guardRollbackCmd(), a.guardLogCmd())
 	return cmd
 }
@@ -67,6 +67,96 @@ func (a *app) guardInstallCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&local, "local", false, "писать в .claude/settings.local.json (не коммитится)")
 	cmd.Flags().StringVar(&bin, "bin", guard.DefaultBin, "как Claude Code вызывает holdfast (имя или полный путь)")
 	return cmd
+}
+
+func (a *app) guardUninstallCmd() *cobra.Command {
+	var local, purge, yes bool
+	cmd := &cobra.Command{
+		Use:   "uninstall",
+		Short: "Отключить Holdfast от Claude Code (обратное к guard install)",
+		Long: `Убирает из .claude/settings.json (или settings.local.json с --local) только
+хуки holdfast; остальные настройки и чужие хуки остаются как были.
+
+Точки восстановления и журнал по умолчанию сохраняются: откат продолжает
+работать. --purge после подтверждения удаляет и их: папку .holdfast/ и все
+ссылки refs/holdfast*/ во всех рабочих деревьях репозитория.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			root, err := a.repoRoot()
+			if err != nil {
+				return err
+			}
+			path, removed, err := guard.UninstallHook(root, local)
+			if err != nil {
+				return err
+			}
+			if removed > 0 {
+				fmt.Fprintf(a.out, "Хуки holdfast удалены из %s (%d). Перезапустите сессию Claude Code.\n", path, removed)
+			} else {
+				fmt.Fprintf(a.out, "В %s хуков holdfast нет\n", path)
+			}
+			// Хуки могли остаться во втором файле — подскажем, как убрать и их.
+			if hooks, _ := guard.FindHooks(root); len(hooks) > 0 {
+				flag := " --local"
+				if local {
+					flag = ""
+				}
+				fmt.Fprintf(a.out, "Хуки holdfast остались в %s: holdfast guard uninstall%s\n", hooks[0].File, flag)
+			}
+			if !purge {
+				fmt.Fprintln(a.out, "Точки восстановления и журнал сохранены, откат работает: holdfast guard list.")
+				fmt.Fprintln(a.out, "Удалить и их: holdfast guard uninstall --purge")
+				return nil
+			}
+			return a.purge(root, yes)
+		},
+	}
+	cmd.Flags().BoolVar(&local, "local", false, "убрать хуки из .claude/settings.local.json")
+	cmd.Flags().BoolVar(&purge, "purge", false, "удалить также .holdfast/ и все точки восстановления")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "не спрашивать подтверждение для --purge")
+	return cmd
+}
+
+// purge удаляет журнал и все точки восстановления после подтверждения.
+func (a *app) purge(root string, yes bool) error {
+	stateDir := filepath.Join(root, guard.StateDir)
+	_, statErr := os.Stat(stateDir)
+	var refs []string
+	g, gitErr := guard.OpenGit(root)
+	if gitErr == nil {
+		var err error
+		if refs, err = g.AllRefs(); err != nil {
+			return err
+		}
+	}
+	if statErr != nil && len(refs) == 0 {
+		fmt.Fprintln(a.out, "Журнала и точек восстановления нет — удалять нечего")
+		return nil
+	}
+	fmt.Fprintln(a.out, "Будут удалены безвозвратно:")
+	if statErr == nil {
+		fmt.Fprintf(a.out, "  %s  (журнал и служебные файлы)\n", stateDir)
+	}
+	if len(refs) > 0 {
+		fmt.Fprintf(a.out, "  %d точек восстановления и резервных копий (refs/holdfast*/, все рабочие деревья)\n", len(refs))
+		fmt.Fprintln(a.out, "  Откатиться к ним будет нельзя.")
+	}
+	if !yes && !a.confirm("Удалить?") {
+		fmt.Fprintln(a.out, "Отменено")
+		return nil
+	}
+	if err := os.RemoveAll(stateDir); err != nil {
+		return err
+	}
+	n := 0
+	if gitErr == nil {
+		var err error
+		if n, err = g.PurgeRefs(); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(a.out, "Удалено: журнал и %d ссылок. Объекты git уберёт обычная сборка мусора (git gc).\n", n)
+	return nil
 }
 
 func (a *app) guardCheckCmd() *cobra.Command {

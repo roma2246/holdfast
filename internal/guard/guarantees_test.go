@@ -709,19 +709,21 @@ func TestServiceFilesAreProtected(t *testing.T) {
 		}
 	}
 	for cmd, want := range map[string]Decision{
-		"rm -rf .claude":          Deny,
-		"mv .claude /tmp/c":       Deny,
-		"rm -rf .holdfast":        Deny,
-		"chmod -R 000 .holdfast":  Deny,
-		"cp -r /tmp/x .holdfast/": Deny,
-		"holdfast sync":           Ask,
-		"holdfast sync --yes":     Ask,
-		"holdfast -C . init":      Ask,
-		"holdfast guard install":  Ask,
-		"holdfast sync --dry-run": Allow,
-		"cat holdfast.toml":       Allow,
-		"mkdir -p .claude/agents": Allow,
-		"echo x > .claude/notes":  Allow,
+		"rm -rf .claude":                              Deny,
+		"mv .claude /tmp/c":                           Deny,
+		"rm -rf .holdfast":                            Deny,
+		"chmod -R 000 .holdfast":                      Deny,
+		"cp -r /tmp/x .holdfast/":                     Deny,
+		"holdfast sync":                               Ask,
+		"holdfast sync --yes":                         Ask,
+		"holdfast -C . init":                          Ask,
+		"holdfast guard install":                      Ask,
+		"holdfast guard uninstall --local":            Ask,
+		"holdfast -C . guard uninstall --purge --yes": Ask,
+		"holdfast sync --dry-run":                     Allow,
+		"cat holdfast.toml":                           Allow,
+		"mkdir -p .claude/agents":                     Allow,
+		"echo x > .claude/notes":                      Allow,
 	} {
 		if got := p.CheckCommand(cmd); got.Decision != want {
 			t.Errorf("%q = %s [%s], want %s", cmd, got.Decision, got.Rule, want)

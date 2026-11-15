@@ -524,7 +524,8 @@ func isHoldfastRollback(args []word) bool {
 }
 
 // changesHoldfastSetup — команда holdfast, которая пишет holdfast.toml или
-// .claude/settings.json: init, sync (кроме --dry-run), guard install.
+// .claude/settings.json: init, sync (кроме --dry-run), guard install и
+// guard uninstall (снимает защиту, а с --purge удаляет точки восстановления).
 func changesHoldfastSetup(args []word) bool {
 	args = holdfastArgs(args)
 	switch {
@@ -535,7 +536,7 @@ func changesHoldfastSetup(args []word) bool {
 	case args[0].s == "sync":
 		return !hasArg(args, "--dry-run")
 	}
-	return len(args) >= 2 && args[0].s == "guard" && args[1].s == "install"
+	return len(args) >= 2 && args[0].s == "guard" && (args[1].s == "install" || args[1].s == "uninstall")
 }
 
 // metadataCommands не читают содержимое файла: существует ли он, размер,
