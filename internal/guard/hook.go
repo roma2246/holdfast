@@ -69,7 +69,7 @@ func RunHook(stdin io.Reader, stdout io.Writer, env HookEnv) (code int) {
 	// Он работает только внутри отложенной (defer) функции.
 	defer func() {
 		if r := recover(); r != nil {
-			v := Verdict{Ask, "internal-error", fmt.Sprintf("внутренняя ошибка holdfast (%v) — нужна проверка пользователем", r)}
+			v := Verdict{Ask, "internal-error", fmt.Sprintf("internal holdfast error (%v); the user needs to review this action", r)}
 			writeOutput(stdout, v, "")
 			if root != "" {
 				entry.Decision, entry.Rule, entry.Reason = v.Decision.String(), v.Rule, v.Reason
@@ -86,7 +86,7 @@ func RunHook(stdin io.Reader, stdout io.Writer, env HookEnv) (code int) {
 	root = projectRoot(input, env)
 	entry = LogEntry{Time: env.Now().UTC(), Session: input.SessionID, Tool: input.ToolName}
 	if err != nil {
-		v := Verdict{Ask, "bad-input", "holdfast не смог прочитать запрос хука — нужна проверка пользователем"}
+		v := Verdict{Ask, "bad-input", "holdfast could not read the hook request; the user needs to review this action"}
 		finish(stdout, root, entry, v, nil)
 		return 0
 	}
@@ -112,7 +112,7 @@ func Evaluate(root string, input HookInput) (Verdict, *Policy) {
 	var ti toolInput
 	if len(input.ToolInput) > 0 {
 		if err := json.Unmarshal(input.ToolInput, &ti); err != nil {
-			return Verdict{Ask, "bad-input", "не удалось разобрать tool_input — нужна проверка пользователем"}, nil
+			return Verdict{Ask, "bad-input", "could not parse tool_input; the user needs to review this action"}, nil
 		}
 	}
 	// Конфиг читаем лениво: только для инструментов, которые проверяем,
@@ -151,7 +151,7 @@ func Evaluate(root string, input HookInput) (Verdict, *Policy) {
 	// всё, что меняет состояние, требует подтверждения, пока конфиг не исправят.
 	if cfgErr != nil && input.ToolName != "Read" {
 		v = worst(v, Verdict{Ask, "config-error", fmt.Sprintf(
-			"%s не читается (%v): правила проекта не применяются. Исправьте конфиг; до этого действия агента требуют подтверждения",
+			"%s cannot be read (%v): the project rules are not applied. Fix the config; until then the agent's actions need confirmation",
 			config.FileName, cfgErr)})
 	}
 	return v, p

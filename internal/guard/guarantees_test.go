@@ -95,14 +95,14 @@ func TestRollbackNeverLosesData(t *testing.T) {
 			after: func(t *testing.T, dir string) {
 				os.RemoveAll(filepath.Join(dir, "conf"))
 				write(t, dir, ".gitignore", "*.log\nconf\n")
-				write(t, dir, "conf", "теперь это файл\n")
+				write(t, dir, "conf", "now this is a file\n")
 			},
 		},
 		{
 			name:   "игнорируемый файл, которого не было в точке, не трогается",
 			before: func(t *testing.T, dir string) {},
 			after: func(t *testing.T, dir string) {
-				write(t, dir, "debug.log", "мой журнал\n")
+				write(t, dir, "debug.log", "my log\n")
 				write(t, dir, "a.txt", "agent\n")
 			},
 		},
@@ -178,17 +178,17 @@ func TestRollbackStopsWhenBackupImpossible(t *testing.T) {
 	}
 	// На месте файла — вложенный git-репозиторий: git не сохранит его содержимое.
 	os.Remove(filepath.Join(dir, "vendor"))
-	write(t, dir, "vendor/lib.txt", "чужой код\n")
+	write(t, dir, "vendor/lib.txt", "someone else's code\n")
 	git(t, filepath.Join(dir, "vendor"), "init", "-q")
 	git(t, filepath.Join(dir, "vendor"), "add", "-A")
 	git(t, filepath.Join(dir, "vendor"), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "nested")
 	before := diskState(t, dir)
 
-	if _, _, err := g.Rollback(snap, time.Now()); err == nil || !strings.Contains(err.Error(), "откат отменён") {
+	if _, _, err := g.Rollback(snap, time.Now()); err == nil || !strings.Contains(err.Error(), "rollback is cancelled") {
 		t.Fatalf("ожидался отказ от отката, получено: %v", err)
 	}
 	after := diskState(t, dir)
-	if len(before) != len(after) || after["vendor/lib.txt"] != "чужой код\n" {
+	if len(before) != len(after) || after["vendor/lib.txt"] != "someone else's code\n" {
 		t.Fatalf("после отказа рабочее дерево изменилось: %v", after)
 	}
 
@@ -197,7 +197,7 @@ func TestRollbackStopsWhenBackupImpossible(t *testing.T) {
 	dir2 := gitRepo(t, true)
 	g2, _ := OpenGit(dir2)
 	snap2, _ := g2.CreateSnapshot(time.Now(), SnapshotMeta{})
-	write(t, dir2, "cloned/lib.txt", "клон\n")
+	write(t, dir2, "cloned/lib.txt", "clone\n")
 	git(t, filepath.Join(dir2, "cloned"), "init", "-q")
 	git(t, filepath.Join(dir2, "cloned"), "add", "-A")
 	git(t, filepath.Join(dir2, "cloned"), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "nested")
@@ -209,7 +209,7 @@ func TestRollbackStopsWhenBackupImpossible(t *testing.T) {
 	if _, _, err := g2.Rollback(snap2, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if read(t, dir2, "a.txt") != "original a\n" || read(t, dir2, "cloned/lib.txt") != "клон\n" {
+	if read(t, dir2, "a.txt") != "original a\n" || read(t, dir2, "cloned/lib.txt") != "clone\n" {
 		t.Fatal("a.txt должен откатиться, вложенный репозиторий — остаться")
 	}
 }
@@ -240,7 +240,7 @@ func TestWorktreesAreIsolated(t *testing.T) {
 		t.Fatal("снимок другого дерева найден по полной ссылке")
 	}
 	// Даже если снимок передан напрямую, откат отказывается.
-	if _, _, err := gMain.Rollback(snapOther, time.Now()); err == nil || !strings.Contains(err.Error(), "другом рабочем дереве") {
+	if _, _, err := gMain.Rollback(snapOther, time.Now()); err == nil || !strings.Contains(err.Error(), "another working tree") {
 		t.Fatalf("откат к чужому снимку: %v", err)
 	}
 	if got := read(t, main, "a.txt"); got != "original a\n" {
@@ -380,7 +380,7 @@ func TestMassDeleteOnlyWhenCovered(t *testing.T) {
 	}
 	// Подсказка при отказе объясняет причину и не предлагает обходов.
 	v := p.CheckCommand("rm -rf local")
-	if !strings.Contains(v.Reason, "local/0.bin") || !strings.Contains(v.Reason, "спроси пользователя") {
+	if !strings.Contains(v.Reason, "local/0.bin") || !strings.Contains(v.Reason, "ask the user") {
 		t.Errorf("подсказка: %s", v.Reason)
 	}
 }
@@ -391,7 +391,7 @@ func TestFailedCheckpointIsVisibleAndGrantsNothing(t *testing.T) {
 	}
 	p, dir := realProject(t)
 	env := testEnv(dir)
-	in := `{"session_id":"s1","cwd":"` + dir + `","prompt":"первый запрос"}`
+	in := `{"session_id":"s1","cwd":"` + dir + `","prompt":"first prompt"}`
 	var out bytes.Buffer
 	RunCheckpoint(strings.NewReader(in), &out, env)
 	if out.Len() != 0 || LastCheckpointError(dir) != "" {
@@ -416,13 +416,13 @@ func TestFailedCheckpointIsVisibleAndGrantsNothing(t *testing.T) {
 			return nil
 		})
 	})
-	write(t, dir, "assets/0.png", "изменено после первой точки")
+	write(t, dir, "assets/0.png", "changed after the first restore point")
 	RunCheckpoint(strings.NewReader(in), &out, env)
 
 	var msg struct {
 		SystemMessage string `json:"systemMessage"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &msg); err != nil || !strings.Contains(msg.SystemMessage, "НЕ создана") {
+	if err := json.Unmarshal(out.Bytes(), &msg); err != nil || !strings.Contains(msg.SystemMessage, "NO restore point was created") {
 		t.Fatalf("пользователь не предупреждён: %q (%v)", out.String(), err)
 	}
 	if LastCheckpointError(dir) == "" {
@@ -434,7 +434,7 @@ func TestFailedCheckpointIsVisibleAndGrantsNothing(t *testing.T) {
 	}
 	// Старая точка не даёт права на массовое удаление: хук пробует сделать
 	// новую, не может — и запрещает.
-	if v := p.CheckCommand("rm -r assets"); v.Decision != Deny || !strings.Contains(v.Reason, "не удалось сохранить точку") {
+	if v := p.CheckCommand("rm -r assets"); v.Decision != Deny || !strings.Contains(v.Reason, "could not save a restore point") {
 		t.Fatalf("после неудачной точки: %s [%s]", v.Decision, v.Reason)
 	}
 }
@@ -810,7 +810,7 @@ func TestPushDestinationIsResolved(t *testing.T) {
 		want         string
 	}{
 		{"remote.origin.push", "[remote \"origin\"]\n\tpush = HEAD:main\n", nil, "git-push-protected"},
-		{"upstream", "[push]\n\tdefault = upstream ; комментарий\n[branch \"dev\"]\n\tmerge = refs/heads/main\n", nil, "git-push-protected"},
+		{"upstream", "[push]\n\tdefault = upstream ; comment\n[branch \"dev\"]\n\tmerge = refs/heads/main\n", nil, "git-push-protected"},
 		{"include", "[include]\n\tpath = extra.cfg\n", map[string]string{".git/extra.cfg": "[push]\ndefault = matching\n"}, "git-push-unclear"},
 		{"mirror", "[remote \"origin\"]\n\tmirror\n", nil, "git-push-force"},
 		{"simple", "[push]\n\tdefault = simple\n[branch \"dev\"]\n\tmerge = refs/heads/main\n", nil, ""},

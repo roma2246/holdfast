@@ -21,7 +21,7 @@ import (
 func (a *app) guardCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "guard",
-		Short: "Предохранитель: хук Claude Code, точки восстановления, журнал и откат",
+		Short: "Guardrails: the Claude Code hook, restore points, the log and rollback",
 	}
 	cmd.AddCommand(a.guardInstallCmd(), a.guardUninstallCmd(), a.guardCheckCmd(), a.guardCheckpointCmd(), a.guardStartCmd(),
 		a.guardListCmd(), a.guardDiffCmd(), a.guardRollbackCmd(), a.guardLogCmd())
@@ -35,10 +35,10 @@ func (a *app) guardInstallCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "install",
-		Short: "Подключить Holdfast к Claude Code (.claude/settings.json проекта)",
-		Long: `Прописывает в .claude/settings.json два хука, не затирая другие настройки:
-  PreToolUse        holdfast guard check       — проверка каждого действия агента
-  UserPromptSubmit  holdfast guard checkpoint  — точка восстановления перед каждым запросом`,
+		Short: "Connect Holdfast to Claude Code (the project's .claude/settings.json)",
+		Long: `Adds two hooks to .claude/settings.json without overwriting other settings:
+  PreToolUse        holdfast guard check       checks every action of the agent
+  UserPromptSubmit  holdfast guard checkpoint  saves a restore point before every prompt`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root, err := a.repoRoot()
@@ -53,19 +53,19 @@ func (a *app) guardInstallCmd() *cobra.Command {
 				return err
 			}
 			if !changed {
-				fmt.Fprintf(a.out, "Хуки уже установлены в %s\n", path)
+				fmt.Fprintf(a.out, "Hooks are already installed in %s\n", path)
 				return nil
 			}
-			fmt.Fprintf(a.out, "Хуки добавлены в %s:\n", path)
-			fmt.Fprintf(a.out, "  • проверка действий агента (%s)\n", guard.HookMatcher)
-			fmt.Fprintln(a.out, "  • точка восстановления перед каждым вашим запросом")
-			fmt.Fprintln(a.out, "Убедитесь, что holdfast доступен в PATH, и перезапустите сессию Claude Code.")
-			fmt.Fprintln(a.out, "Точки: holdfast guard list · откат: holdfast guard rollback")
+			fmt.Fprintf(a.out, "Hooks added to %s:\n", path)
+			fmt.Fprintf(a.out, "  • checking the agent's actions (%s)\n", guard.HookMatcher)
+			fmt.Fprintln(a.out, "  • a restore point before every prompt you send")
+			fmt.Fprintln(a.out, "Make sure holdfast is on your PATH and restart the Claude Code session.")
+			fmt.Fprintln(a.out, "Restore points: holdfast guard list · rollback: holdfast guard rollback")
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&local, "local", false, "писать в .claude/settings.local.json (не коммитится)")
-	cmd.Flags().StringVar(&bin, "bin", guard.DefaultBin, "как Claude Code вызывает holdfast (имя или полный путь)")
+	cmd.Flags().BoolVar(&local, "local", false, "write to .claude/settings.local.json (not committed)")
+	cmd.Flags().StringVar(&bin, "bin", guard.DefaultBin, "how Claude Code invokes holdfast (a name or a full path)")
 	return cmd
 }
 
@@ -73,13 +73,13 @@ func (a *app) guardUninstallCmd() *cobra.Command {
 	var local, purge, yes bool
 	cmd := &cobra.Command{
 		Use:   "uninstall",
-		Short: "Отключить Holdfast от Claude Code (обратное к guard install)",
-		Long: `Убирает из .claude/settings.json (или settings.local.json с --local) только
-хуки holdfast; остальные настройки и чужие хуки остаются как были.
+		Short: "Disconnect Holdfast from Claude Code (the inverse of guard install)",
+		Long: `Removes only the holdfast hooks from .claude/settings.json (or from
+settings.local.json with --local); other settings and other tools' hooks stay as they were.
 
-Точки восстановления и журнал по умолчанию сохраняются: откат продолжает
-работать. --purge после подтверждения удаляет и их: папку .holdfast/ и все
-ссылки refs/holdfast*/ во всех рабочих деревьях репозитория.`,
+Restore points and the log are kept by default: rollback keeps working.
+--purge, after a confirmation, deletes those too: the .holdfast/ directory and
+all refs/holdfast*/ refs in every working tree of the repository.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root, err := a.repoRoot()
@@ -91,9 +91,9 @@ func (a *app) guardUninstallCmd() *cobra.Command {
 				return err
 			}
 			if removed > 0 {
-				fmt.Fprintf(a.out, "Хуки holdfast удалены из %s (%d). Перезапустите сессию Claude Code.\n", path, removed)
+				fmt.Fprintf(a.out, "holdfast hooks removed from %s (%d). Restart the Claude Code session.\n", path, removed)
 			} else {
-				fmt.Fprintf(a.out, "В %s хуков holdfast нет\n", path)
+				fmt.Fprintf(a.out, "No holdfast hooks in %s\n", path)
 			}
 			// Хуки могли остаться во втором файле — подскажем, как убрать и их.
 			if hooks, _ := guard.FindHooks(root); len(hooks) > 0 {
@@ -101,19 +101,19 @@ func (a *app) guardUninstallCmd() *cobra.Command {
 				if local {
 					flag = ""
 				}
-				fmt.Fprintf(a.out, "Хуки holdfast остались в %s: holdfast guard uninstall%s\n", hooks[0].File, flag)
+				fmt.Fprintf(a.out, "holdfast hooks remain in %s: holdfast guard uninstall%s\n", hooks[0].File, flag)
 			}
 			if !purge {
-				fmt.Fprintln(a.out, "Точки восстановления и журнал сохранены, откат работает: holdfast guard list.")
-				fmt.Fprintln(a.out, "Удалить и их: holdfast guard uninstall --purge")
+				fmt.Fprintln(a.out, "Restore points and the log are kept, rollback still works: holdfast guard list.")
+				fmt.Fprintln(a.out, "To delete them too: holdfast guard uninstall --purge")
 				return nil
 			}
 			return a.purge(root, yes)
 		},
 	}
-	cmd.Flags().BoolVar(&local, "local", false, "убрать хуки из .claude/settings.local.json")
-	cmd.Flags().BoolVar(&purge, "purge", false, "удалить также .holdfast/ и все точки восстановления")
-	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "не спрашивать подтверждение для --purge")
+	cmd.Flags().BoolVar(&local, "local", false, "remove the hooks from .claude/settings.local.json")
+	cmd.Flags().BoolVar(&purge, "purge", false, "also delete .holdfast/ and all restore points")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "don't ask for confirmation for --purge")
 	return cmd
 }
 
@@ -130,19 +130,19 @@ func (a *app) purge(root string, yes bool) error {
 		}
 	}
 	if statErr != nil && len(refs) == 0 {
-		fmt.Fprintln(a.out, "Журнала и точек восстановления нет — удалять нечего")
+		fmt.Fprintln(a.out, "There is no log and there are no restore points: nothing to delete")
 		return nil
 	}
-	fmt.Fprintln(a.out, "Будут удалены безвозвратно:")
+	fmt.Fprintln(a.out, "This will be deleted permanently:")
 	if statErr == nil {
-		fmt.Fprintf(a.out, "  %s  (журнал и служебные файлы)\n", stateDir)
+		fmt.Fprintf(a.out, "  %s  (the log and service files)\n", stateDir)
 	}
 	if len(refs) > 0 {
-		fmt.Fprintf(a.out, "  %d точек восстановления и резервных копий (refs/holdfast*/, все рабочие деревья)\n", len(refs))
-		fmt.Fprintln(a.out, "  Откатиться к ним будет нельзя.")
+		fmt.Fprintf(a.out, "  restore points and backups: %d (refs/holdfast*/, all working trees)\n", len(refs))
+		fmt.Fprintln(a.out, "  You will not be able to roll back to them.")
 	}
-	if !yes && !a.confirm("Удалить?") {
-		fmt.Fprintln(a.out, "Отменено")
+	if !yes && !a.confirm("Delete?") {
+		fmt.Fprintln(a.out, "Cancelled")
 		return nil
 	}
 	if err := os.RemoveAll(stateDir); err != nil {
@@ -155,14 +155,14 @@ func (a *app) purge(root string, yes bool) error {
 			return err
 		}
 	}
-	fmt.Fprintf(a.out, "Удалено: журнал и %d ссылок. Объекты git уберёт обычная сборка мусора (git gc).\n", n)
+	fmt.Fprintf(a.out, "Deleted the log and all Holdfast refs (%d). git's regular garbage collection (git gc) will remove the objects.\n", n)
 	return nil
 }
 
 func (a *app) guardCheckCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "check",
-		Short: "Проверить действие агента (вызывается хуком PreToolUse: JSON в stdin)",
+		Short: "Check an agent action (called by the PreToolUse hook: JSON on stdin)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if code := guard.RunHook(a.in, a.out, guard.DefaultHookEnv()); code != 0 {
@@ -176,7 +176,7 @@ func (a *app) guardCheckCmd() *cobra.Command {
 func (a *app) guardCheckpointCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "checkpoint",
-		Short: "Точка восстановления перед запросом (вызывается хуком UserPromptSubmit)",
+		Short: "Save a restore point before a prompt (called by the UserPromptSubmit hook)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// При успехе ничего не печатаем (вывод этого хука попал бы в
@@ -199,10 +199,10 @@ func (a *app) openGit() (*guard.Git, error) {
 func (a *app) guardStartCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "start",
-		Short: "Сделать снимок рабочего дерева вручную",
-		Long: `Сохраняет текущее состояние, включая неотслеживаемые файлы.
-С подключёнными хуками (holdfast guard install) точки создаются автоматически
-перед каждым запросом, и start нужен только для дополнительной точки.`,
+		Short: "Take a snapshot of the working tree manually",
+		Long: `Saves the current state, including untracked files.
+With the hooks connected (holdfast guard install) restore points are created
+automatically before every prompt, and start is only needed for an extra one.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root, err := a.repoRoot()
@@ -222,8 +222,8 @@ func (a *app) guardStartCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(a.out, "Снапшот %s сохранён (%s)\n", snap.Name(), snap.Ref)
-			fmt.Fprintln(a.out, "Изменения: holdfast guard diff · откат: holdfast guard rollback")
+			fmt.Fprintf(a.out, "Snapshot %s saved (%s)\n", snap.Name(), snap.Ref)
+			fmt.Fprintln(a.out, "Changes: holdfast guard diff · rollback: holdfast guard rollback")
 			return nil
 		},
 	}
@@ -241,7 +241,7 @@ func (a *app) guardListCmd() *cobra.Command {
 	var limit int
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "Показать точки восстановления: когда, перед каким запросом, что изменилось с тех пор",
+		Short: "Show restore points: when, before which prompt, what has changed since",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root, err := a.repoRoot()
@@ -257,11 +257,11 @@ func (a *app) guardListCmd() *cobra.Command {
 				return err
 			}
 			if msg := guard.LastCheckpointError(root); msg != "" {
-				fmt.Fprintf(a.out, "⚠ Последняя автоматическая точка НЕ создана: %s\n  Изменения последнего запроса этой точкой не защищены.\n\n", msg)
+				fmt.Fprintf(a.out, "⚠ The latest automatic restore point was NOT created: %s\n  The changes from the last prompt are not covered by a restore point.\n\n", msg)
 			}
 			if len(snaps) == 0 {
-				fmt.Fprintln(a.out, "Точек восстановления пока нет.")
-				fmt.Fprintln(a.out, "Подключите хуки (holdfast guard install) или сделайте снимок вручную: holdfast guard start")
+				fmt.Fprintln(a.out, "No restore points yet.")
+				fmt.Fprintln(a.out, "Connect the hooks (holdfast guard install) or take a snapshot manually: holdfast guard start")
 				return nil
 			}
 			if limit > 0 && len(snaps) > limit {
@@ -274,20 +274,20 @@ func (a *app) guardListCmd() *cobra.Command {
 			now := time.Now()
 			for i, s := range snaps {
 				label := snapshotLabel(s)
-				changes := "без изменений с тех пор"
+				changes := "no changes since"
 				if s.Tree != cur {
 					if ch, err := g.ChangesTo(s, cur); err == nil {
-						changes = fmt.Sprintf("с тех пор: изменено %d, добавлено %d", len(ch.Modified), len(ch.Added))
+						changes = fmt.Sprintf("since then: %d changed, %d added", len(ch.Modified), len(ch.Added))
 					}
 				}
 				fmt.Fprintf(a.out, "%3d  %s (%s)  %s\n     %s\n", i+1,
 					s.Time.Local().Format("01-02 15:04"), humanAgo(now.Sub(s.Time)), label, changes)
 			}
-			fmt.Fprintln(a.out, "\nОткат к точке: holdfast guard rollback --to <номер> · изменения: holdfast guard diff --to <номер>")
+			fmt.Fprintln(a.out, "\nRoll back to a point: holdfast guard rollback --to <number> · changes: holdfast guard diff --to <number>")
 			return nil
 		},
 	}
-	cmd.Flags().IntVarP(&limit, "limit", "n", 10, "сколько последних точек показать (0 — все)")
+	cmd.Flags().IntVarP(&limit, "limit", "n", 10, "how many of the latest restore points to show (0 for all)")
 	return cmd
 }
 
@@ -296,28 +296,28 @@ func snapshotLabel(s guard.Snapshot) string {
 	switch s.Meta.Kind {
 	case guard.KindCheckpoint:
 		if s.Meta.Prompt != "" {
-			return "перед запросом «" + truncate(s.Meta.Prompt, 60) + "»"
+			return "before prompt \"" + truncate(s.Meta.Prompt, 60) + "\""
 		}
-		return "перед запросом"
+		return "before prompt"
 	case guard.KindPreDelete:
-		return "перед массовым удалением: " + truncate(s.Meta.Prompt, 50)
+		return "before mass deletion: " + truncate(s.Meta.Prompt, 50)
 	case guard.KindBackup:
-		return "резервная копия " + truncate(s.Meta.Prompt, 50)
+		return "backup " + truncate(s.Meta.Prompt, 50)
 	}
-	return "вручную"
+	return "manual"
 }
 
 // humanAgo — «5 мин назад», «3 ч назад», «2 дн назад».
 func humanAgo(d time.Duration) string {
 	switch {
 	case d < time.Minute:
-		return "только что"
+		return "just now"
 	case d < time.Hour:
-		return fmt.Sprintf("%d мин назад", int(d.Minutes()))
+		return fmt.Sprintf("%d min ago", int(d.Minutes()))
 	case d < 48*time.Hour:
-		return fmt.Sprintf("%d ч назад", int(d.Hours()))
+		return fmt.Sprintf("%d h ago", int(d.Hours()))
 	default:
-		return fmt.Sprintf("%d дн назад", int(d.Hours()/24))
+		return fmt.Sprintf("%d days ago", int(d.Hours()/24))
 	}
 }
 
@@ -329,7 +329,7 @@ func (a *app) guardDiffCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "diff",
-		Short: "Показать изменения с момента точки восстановления",
+		Short: "Show the changes since a restore point",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			g, err := a.openGit()
@@ -345,15 +345,15 @@ func (a *app) guardDiffCmd() *cobra.Command {
 				return err
 			}
 			if ch.Empty() {
-				fmt.Fprintf(a.out, "Изменений с момента снапшота %s нет\n", snap.Name())
+				fmt.Fprintf(a.out, "No changes since snapshot %s\n", snap.Name())
 				return nil
 			}
 			return g.Diff(a.out, snap, guard.DiffOptions{Stat: stat, Color: isTerminal(a.out)})
 		},
 	}
-	cmd.Flags().BoolVar(&stat, "stat", false, "только статистика по файлам")
-	cmd.Flags().IntVar(&to, "to", 0, "номер точки из holdfast guard list (1 — последняя)")
-	cmd.Flags().StringVar(&name, "snapshot", "", "имя снапшота или резервной копии (по умолчанию последний)")
+	cmd.Flags().BoolVar(&stat, "stat", false, "per-file statistics only")
+	cmd.Flags().IntVar(&to, "to", 0, "restore point number from holdfast guard list (1 is the latest)")
+	cmd.Flags().StringVar(&name, "snapshot", "", "name of a snapshot or backup (the latest by default)")
 	return cmd
 }
 
@@ -365,11 +365,11 @@ func (a *app) guardRollbackCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "rollback",
-		Short: "Вернуть файлы к точке восстановления (с подтверждением)",
-		Long: `Возвращает рабочее дерево к точке восстановления: изменённые и удалённые
-файлы восстанавливаются, появившиеся после точки — удаляются. Ветки, коммиты
-и индекс git не меняются. Текущее состояние перед откатом сохраняется, так что
-откат тоже можно отменить.`,
+		Short: "Return the files to a restore point (asks for confirmation)",
+		Long: `Returns the working tree to a restore point: changed and deleted files are
+restored, files that appeared after the point are deleted. Branches, commits
+and the git index are not changed. The current state is saved before the
+rollback, so the rollback itself can be undone.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			g, err := a.openGit()
@@ -388,10 +388,10 @@ func (a *app) guardRollbackCmd() *cobra.Command {
 			}
 			ch := plan.Changes
 			if ch.Empty() {
-				fmt.Fprintf(a.out, "Рабочее дерево совпадает со снапшотом %s — откатывать нечего\n", snap.Name())
+				fmt.Fprintf(a.out, "The working tree matches snapshot %s: nothing to roll back\n", snap.Name())
 				return nil
 			}
-			fmt.Fprintf(a.out, "Откат к снапшоту %s (%s), %s:\n", snap.Name(),
+			fmt.Fprintf(a.out, "Rollback to snapshot %s (%s), %s:\n", snap.Name(),
 				snap.Time.Local().Format("2006-01-02 15:04:05"), snapshotLabel(snap))
 			hidden := map[string]bool{}
 			for _, h := range plan.Hidden {
@@ -400,36 +400,36 @@ func (a *app) guardRollbackCmd() *cobra.Command {
 			note := func(f string) string {
 				for h := range hidden {
 					if f == h || strings.HasPrefix(f, h+"/") {
-						return "  (сейчас игнорируется git; текущая версия сохранится в резервной копии)"
+						return "  (currently ignored by git; the current version will be saved in the backup)"
 					}
 				}
 				return ""
 			}
 			for _, f := range ch.Modified {
-				fmt.Fprintf(a.out, "  восстановить  %s%s\n", f, note(f))
+				fmt.Fprintf(a.out, "  restore  %s%s\n", f, note(f))
 			}
 			for _, f := range ch.Added {
-				fmt.Fprintf(a.out, "  удалить       %s%s\n", f, note(f))
+				fmt.Fprintf(a.out, "  delete   %s%s\n", f, note(f))
 			}
 			for _, f := range plan.Skipped {
-				fmt.Fprintf(a.out, "  не трогать    %s  (вложенный git-репозиторий: его содержимое нельзя сохранить)\n", f)
+				fmt.Fprintf(a.out, "  keep     %s  (a nested git repository: its contents can't be saved)\n", f)
 			}
-			if !yes && !a.confirm("Откатить эти изменения?") {
-				fmt.Fprintln(a.out, "Отменено")
+			if !yes && !a.confirm("Roll back these changes?") {
+				fmt.Fprintln(a.out, "Cancelled")
 				return nil
 			}
 			done, backup, err := g.Rollback(snap, time.Now())
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(a.out, "Готово: восстановлено %d, удалено %d файлов.\n", len(done.Modified), len(done.Added))
-			fmt.Fprintf(a.out, "Состояние до отката сохранено. Отменить откат: holdfast guard rollback --snapshot %s\n", backup.Name())
+			fmt.Fprintf(a.out, "Done: %d restored, %d deleted.\n", len(done.Modified), len(done.Added))
+			fmt.Fprintf(a.out, "The state before the rollback is saved. To undo the rollback: holdfast guard rollback --snapshot %s\n", backup.Name())
 			return nil
 		},
 	}
-	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "не спрашивать подтверждение")
-	cmd.Flags().IntVar(&to, "to", 0, "номер точки из holdfast guard list (1 — последняя)")
-	cmd.Flags().StringVar(&name, "snapshot", "", "имя снапшота или резервной копии (по умолчанию последний)")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "don't ask for confirmation")
+	cmd.Flags().IntVar(&to, "to", 0, "restore point number from holdfast guard list (1 is the latest)")
+	cmd.Flags().StringVar(&name, "snapshot", "", "name of a snapshot or backup (the latest by default)")
 	return cmd
 }
 
@@ -441,7 +441,7 @@ func (a *app) guardLogCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "log",
-		Short: "Показать журнал: что разрешено, что заблокировано и почему",
+		Short: "Show the log: what was allowed, what was blocked, and why",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root, err := a.repoRoot()
@@ -471,16 +471,16 @@ func (a *app) guardLogCmd() *cobra.Command {
 				return nil
 			}
 			if len(filtered) == 0 {
-				fmt.Fprintln(a.out, "Журнал пуст")
+				fmt.Fprintln(a.out, "The log is empty")
 				return nil
 			}
 			a.printLogTable(root, filtered)
 			return nil
 		},
 	}
-	cmd.Flags().IntVarP(&limit, "limit", "n", 50, "сколько последних записей показать (0 — все)")
-	cmd.Flags().StringVar(&decision, "decision", "", "фильтр: allow, ask или deny")
-	cmd.Flags().BoolVar(&asJSON, "json", false, "вывод в JSONL")
+	cmd.Flags().IntVarP(&limit, "limit", "n", 50, "how many of the latest entries to show (0 for all)")
+	cmd.Flags().StringVar(&decision, "decision", "", "filter: allow, ask or deny")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "output as JSONL")
 	return cmd
 }
 
@@ -495,14 +495,14 @@ func (a *app) printLogTable(root string, entries []guard.LogEntry) {
 	t := table.New().
 		Border(lipgloss.NormalBorder()).
 		BorderStyle(r.NewStyle().Faint(true)).
-		Headers("ВРЕМЯ", "РЕШЕНИЕ", "ИНСТРУМЕНТ", "ДЕЙСТВИЕ", "ПРАВИЛО / ПРИЧИНА")
+		Headers("TIME", "DECISION", "TOOL", "ACTION", "RULE / REASON")
 	for _, e := range entries {
 		why := e.Rule
 		if e.Decision != "allow" && e.Reason != "" {
 			why = e.Rule + ": " + e.Reason
 		}
 		if len(e.Context) > 0 {
-			why = strings.TrimPrefix(why+" · подсказка: "+strings.Join(e.Context, ", "), " · ")
+			why = strings.TrimPrefix(why+" · hint: "+strings.Join(e.Context, ", "), " · ")
 		}
 		t.Row(e.Time.Local().Format("01-02 15:04:05"), e.Decision, e.Tool,
 			truncate(relTarget(root, e.Target), targetW), truncate(why, whyW))

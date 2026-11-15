@@ -80,11 +80,11 @@ func WriteHuman(w io.Writer, files int, fs []Finding) {
 		fmt.Fprintln(w)
 	}
 	if s.Errors+s.Warnings+s.Infos == 0 {
-		fmt.Fprintln(w, okStyle.Render(fmt.Sprintf("✓ Проверено файлов: %d, проблем не найдено", files)))
+		fmt.Fprintln(w, okStyle.Render(fmt.Sprintf("✓ Files checked: %d, no problems found", files)))
 		return
 	}
-	fmt.Fprintf(w, "Проверено файлов: %d · %s · %s · %s\n", files,
-		sevStyle[Error].Render(fmt.Sprintf("ошибок: %d", s.Errors)),
-		sevStyle[Warning].Render(fmt.Sprintf("предупреждений: %d", s.Warnings)),
-		sevStyle[Info].Render(fmt.Sprintf("заметок: %d", s.Infos)))
+	fmt.Fprintf(w, "Files checked: %d · %s · %s · %s\n", files,
+		sevStyle[Error].Render(fmt.Sprintf("errors: %d", s.Errors)),
+		sevStyle[Warning].Render(fmt.Sprintf("warnings: %d", s.Warnings)),
+		sevStyle[Info].Render(fmt.Sprintf("notes: %d", s.Infos)))
 }

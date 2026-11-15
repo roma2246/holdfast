@@ -72,11 +72,11 @@ func (p *Policy) isolated(f func()) {
 
 func (p *Policy) checkScript(src string, depth int) Verdict {
 	if depth > maxDepth {
-		return p.soft("too-deep", "слишком глубокая вложенность bash -c", "Разбей команду на несколько простых шагов")
+		return p.soft("too-deep", "bash -c is nested too deeply", "Split the command into several simple steps")
 	}
 	file, err := parseShell(src)
 	if err != nil {
-		return p.soft("parse-error", fmt.Sprintf("не удалось разобрать команду (%v)", err), "Перепиши команду в простом синтаксисе bash")
+		return p.soft("parse-error", fmt.Sprintf("could not parse the command (%v)", err), "Rewrite the command in plain bash syntax")
 	}
 	p.scanGitEnv(file)
 	return p.checkNode(file, depth)
@@ -487,15 +487,15 @@ func (p *Policy) checkArgs(args []word, viaXargs bool, depth int) Verdict {
 	case name == "holdfast" && isHoldfastRollback(args[1:]):
 		// Откат перезаписывает файлы проекта, в том числе правки самого
 		// пользователя, — это решает человек, а не агент.
-		v = worst(v, Verdict{Ask, "holdfast-rollback", "откат перезапишет файлы проекта — нужно подтверждение пользователя"})
+		v = worst(v, Verdict{Ask, "holdfast-rollback", "a rollback overwrites project files; user confirmation required"})
 	case name == "holdfast" && changesHoldfastSetup(args[1:]):
 		// holdfast sync после правки CLAUDE.md может снять запреты — как и
 		// правку holdfast.toml, это решает пользователь.
-		v = worst(v, Verdict{Ask, "holdfast-config", "команда меняет настройки защиты Holdfast — нужно подтверждение пользователя"})
+		v = worst(v, Verdict{Ask, "holdfast-config", "this command changes Holdfast's protection settings; user confirmation required"})
 	case name == "npm" || name == "pnpm" || name == "yarn" || name == "bun":
 		if hasArg(args[1:], "publish") {
-			v = worst(v, p.soft("npm-publish", name+" publish необратимо публикует пакет",
-				"Подготовь версию и changelog, а публикацию оставь человеку или CI"))
+			v = worst(v, p.soft("npm-publish", name+" publish releases the package irreversibly",
+				"Prepare the version and the changelog, and leave publishing to a human or CI"))
 		}
 	case name == "find":
 		v = worst(v, p.checkFind(args[1:]))
@@ -646,7 +646,7 @@ func (p *Policy) checkShellCall(args []word, depth int) Verdict {
 
 func curlPipeVerdict() Verdict {
 	return Verdict{Deny, "curl-pipe-shell",
-		"выполнение скрипта, скачанного из сети (curl | sh), запрещено. Скачай файл (curl -o), покажи его пользователю и запускай только после проверки"}
+		"running a script downloaded from the network (curl | sh) is not allowed. Download the file (curl -o), show it to the user and run it only after it has been reviewed"}
 }
 
 // containsDownloader — есть ли внутри узла вызов curl/wget.
@@ -770,8 +770,8 @@ func (p *Policy) checkMutatingPaths(name string, args []word) Verdict {
 		dests, tooMany := p.copyTargets(name, args)
 		paths = dests
 		if tooMany {
-			v = p.soft("copy-too-many", fmt.Sprintf("%s копирует больше %d файлов — проверить их все не удалось", name, maxScanFiles),
-				"Копируй по частям, по одной папке")
+			v = p.soft("copy-too-many", fmt.Sprintf("%s copies more than %d files, too many to check them all", name, maxScanFiles),
+				"Copy in parts, one directory at a time")
 		}
 		if name == "mv" || name == "ln" {
 			// mv удаляет источник; ln создаёт ещё одно имя для файла, и запись
@@ -847,8 +847,8 @@ func (p *Policy) checkRm(args []word, viaXargs bool) Verdict {
 	}
 
 	if viaXargs && recursive {
-		return p.soft("rm-dynamic", "rm -r с путями из xargs: цели неизвестны заранее",
-			"Перечисли пути явно (сначала посмотри список без rm)")
+		return p.soft("rm-dynamic", "rm -r with paths from xargs: the targets are not known in advance",
+			"List the paths explicitly (look at the list without rm first)")
 	}
 
 	v := allowVerdict
@@ -858,8 +858,8 @@ func (p *Policy) checkRm(args []word, viaXargs bool) Verdict {
 		relativeAfterUnknownCd := p.cwdUnknown && !filepath.IsAbs(p.expandHome(t.s))
 		if (t.dynamic && !strings.HasPrefix(t.s, "$HOME")) || relativeAfterUnknownCd {
 			if recursive {
-				v = worst(v, p.soft("rm-dynamic", fmt.Sprintf("rm -r с вычисляемым путём (%s): значение неизвестно", t.s),
-					"Подставь путь явно, без переменных и cd на переменную"))
+				v = worst(v, p.soft("rm-dynamic", fmt.Sprintf("rm -r with a computed path (%s): its value is unknown", t.s),
+					"Write the path out explicitly, without variables and without cd into a variable"))
 			}
 			continue
 		}
@@ -869,10 +869,10 @@ func (p *Policy) checkRm(args []word, viaXargs bool) Verdict {
 			}
 		}
 	}
-	v = worst(v, p.deleteInProject("удаление (rm)", inProject, recursive, nil))
+	v = worst(v, p.deleteInProject("deleting with rm", inProject, recursive, nil))
 	if otherCount > p.cfg.MaxDeletes {
-		v = worst(v, p.soft("mass-delete", fmt.Sprintf("удаление более %d файлов вне проекта", p.cfg.MaxDeletes),
-			"Снапшот проекта эти файлы не защищает — удаляй по несколько файлов за раз"))
+		v = worst(v, p.soft("mass-delete", fmt.Sprintf("deleting more than %d files outside the project", p.cfg.MaxDeletes),
+			"The project's restore points do not cover those files, so delete a few files at a time"))
 	}
 	return v
 }
@@ -911,24 +911,24 @@ func (p *Policy) rmBases(t word, recursive bool) []string {
 func (p *Policy) checkRmTarget(base string, recursive bool, v *Verdict, inProject *[]string, otherCount *int) Verdict {
 	switch {
 	case recursive && (base == "/" || base == filepath.Dir(base)):
-		return Verdict{Deny, "rm-root", "rm -r на корень файловой системы запрещён"}
+		return Verdict{Deny, "rm-root", "rm -r on the filesystem root is not allowed. Delete specific files inside the project"}
 	case recursive && (base == p.Home || isWithin(base, p.Home)):
-		return Verdict{Deny, "rm-home", "rm -r на домашнюю папку запрещён. Удаляй конкретные файлы внутри проекта"}
+		return Verdict{Deny, "rm-home", "rm -r on the home directory is not allowed. Delete specific files inside the project"}
 	case recursive && (base == p.Root || isWithin(base, p.Root)):
 		// и сам репозиторий, и любая папка, которая его содержит
-		return Verdict{Deny, "rm-repo-root", "rm -r на весь репозиторий запрещён. Удаляй конкретные файлы или папки"}
+		return Verdict{Deny, "rm-repo-root", "rm -r on the whole repository is not allowed. Delete specific files or directories"}
 	case !p.cfg.Strict() && !p.inRepo(base) && p.isTempPath(base):
 		// временные файлы вне проекта: удаляем без вопросов.
 		// Проверка идёт после repo-root: проект сам может лежать в /tmp.
 	case recursive && !p.inRepo(base):
-		return Verdict{Deny, "rm-outside-repo", fmt.Sprintf("rm -r вне репозитория (%s) запрещён. Работай только с файлами проекта %s", base, p.Root)}
+		return Verdict{Deny, "rm-outside-repo", fmt.Sprintf("rm -r outside the repository (%s) is not allowed. Work only with the files of the project %s", base, p.Root)}
 	case !p.cfg.Strict() && !p.inRepo(base) && p.inOtherRepo(base):
 		// Отдельные файлы в другом git-репозитории (агент работает и там):
 		// можно, но массовое удаление — нет, снапшот проекта их не защищает.
 		*otherCount += p.countTargets(base, false, p.cfg.MaxDeletes+1-*otherCount)
 	case !p.inRepo(base):
-		*v = worst(*v, p.soft("rm-outside-repo", fmt.Sprintf("удаление файла вне репозитория (%s)", base),
-			"Удаляй только файлы проекта, отдельные файлы в git-репозиториях или временные файлы в /tmp"))
+		*v = worst(*v, p.soft("rm-outside-repo", fmt.Sprintf("deleting a file outside the repository (%s)", base),
+			"Delete only project files, individual files in git repositories or temporary files in /tmp"))
 	default:
 		*inProject = append(*inProject, base)
 	}
@@ -1008,17 +1008,17 @@ func (p *Policy) checkGit(args []word) Verdict {
 	case "update-ref":
 		for _, w := range rest {
 			if strings.HasPrefix(w.s, "refs/holdfast") {
-				return Verdict{Deny, "holdfast-snapshots", "точки восстановления — страховка пользователя, менять и удалять их агенту нельзя"}
+				return Verdict{Deny, "holdfast-snapshots", "restore points are the user's safety net, the agent must not change or delete them. Leave refs/holdfast untouched"}
 			}
 		}
 		if hasArg(rest, "--stdin") {
 			// Имена ссылок придут из stdin — что изменится, неизвестно.
-			return p.soft("git-update-ref", "git update-ref --stdin: изменяемые ссылки неизвестны заранее",
-				"Используй явную форму: git update-ref <ссылка> <значение>")
+			return p.soft("git-update-ref", "git update-ref --stdin: the refs it changes are not known in advance",
+				"Use the explicit form: git update-ref <ref> <value>")
 		}
 	case "reset":
 		if hasArg(rest, "--hard") {
-			return Verdict{Deny, "git-reset-hard", "git reset --hard безвозвратно стирает незакоммиченные изменения. Используй git stash или git restore <файл> для конкретных файлов"}
+			return Verdict{Deny, "git-reset-hard", "git reset --hard irreversibly wipes uncommitted changes. Use git stash, or git restore <file> for specific files"}
 		}
 	case "clean":
 		force, ignored := false, false
@@ -1033,8 +1033,8 @@ func (p *Policy) checkGit(args []word) Verdict {
 		}
 		switch {
 		case force && ignored:
-			return p.soft("git-clean", "git clean -x удаляет и игнорируемые файлы (.env, локальные настройки) — их нет в точках восстановления",
-				"Удаляй конкретные файлы или используй git clean -f без -x")
+			return p.soft("git-clean", "git clean -x also deletes ignored files (.env, local settings), and those are not in the restore points",
+				"Delete specific files or use git clean -f without -x")
 		case force:
 			return p.checkGitClean(p.abs(dir), dirUnknown)
 		}
@@ -1052,22 +1052,22 @@ func (p *Policy) checkConfigured(args []word) Verdict {
 		switch r.Kind {
 		case "deny-command":
 			if MatchCommand(argv, r.Pattern) {
-				v = worst(v, Verdict{Deny, "synced-deny-command", fmt.Sprintf("команда «%s» запрещена правилом из %s", r.Pattern, r.Source)})
+				v = worst(v, Verdict{Deny, "synced-deny-command", fmt.Sprintf("the command \"%s\" is forbidden by a rule from %s", r.Pattern, r.Source)})
 			}
 		case "ask-command":
 			if MatchCommand(argv, r.Pattern) {
-				v = worst(v, Verdict{Ask, "synced-ask-command", fmt.Sprintf("команда «%s» требует подтверждения (правило из %s)", r.Pattern, r.Source)})
+				v = worst(v, Verdict{Ask, "synced-ask-command", fmt.Sprintf("the command \"%s\" needs confirmation (rule from %s)", r.Pattern, r.Source)})
 			}
 		}
 	}
 	for _, pat := range p.cfg.DenyCommands {
 		if MatchCommand(argv, pat) {
-			v = worst(v, Verdict{Deny, "deny-command", fmt.Sprintf("команда «%s» запрещена в holdfast.toml", pat)})
+			v = worst(v, Verdict{Deny, "deny-command", fmt.Sprintf("the command \"%s\" is forbidden in holdfast.toml", pat)})
 		}
 	}
 	for _, pat := range p.cfg.AskCommands {
 		if MatchCommand(argv, pat) {
-			v = worst(v, Verdict{Ask, "ask-command", fmt.Sprintf("команда «%s» требует подтверждения пользователя", pat)})
+			v = worst(v, Verdict{Ask, "ask-command", fmt.Sprintf("the command \"%s\" needs the user's confirmation", pat)})
 		}
 	}
 	return v

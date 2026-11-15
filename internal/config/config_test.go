@@ -79,7 +79,7 @@ func TestLoadInvalid(t *testing.T) {
 
 func TestWriteSynced(t *testing.T) {
 	dir := t.TempDir()
-	orig := "# мой комментарий\n[lint]\nmax_tokens = 1000\n\n[guard]\nprotected_paths = [\"db/**\"]\n"
+	orig := "# my comment\n[lint]\nmax_tokens = 1000\n\n[guard]\nprotected_paths = [\"db/**\"]\n"
 	os.WriteFile(filepath.Join(dir, FileName), []byte(orig), 0o644)
 
 	rules := []SyncedRule{
@@ -93,7 +93,7 @@ func TestWriteSynced(t *testing.T) {
 	}
 	data, _ := os.ReadFile(filepath.Join(dir, FileName))
 	text := string(data)
-	if !strings.Contains(text, "# мой комментарий") || strings.Count(text, "[[guard.synced.rules]]") != 2 {
+	if !strings.Contains(text, "# my comment") || strings.Count(text, "[[guard.synced.rules]]") != 2 {
 		t.Fatalf("файл:\n%s", text)
 	}
 	cfg, err := Load(dir)
@@ -111,6 +111,23 @@ func TestWriteSynced(t *testing.T) {
 	cfg, _ = Load(dir)
 	if len(cfg.Guard.Synced.Rules) != 0 {
 		t.Fatal("секция должна исчезнуть")
+	}
+}
+
+// A config written by an older version has the Russian marker above the
+// generated section: a re-sync must replace it, not leave it behind.
+func TestWriteSyncedReplacesLegacyMarker(t *testing.T) {
+	dir := t.TempDir()
+	old := "[guard]\nmax_deletes = 3\n\n" + legacySyncedMarker + "\n[[guard.synced.rules]]\nkind = \"deny-path\"\npattern = \"old/**\"\nsource = \"CLAUDE.md:1\"\norigin = \"explicit\"\n"
+	os.WriteFile(filepath.Join(dir, FileName), []byte(old), 0o644)
+	rules := []SyncedRule{{Kind: KindDenyPath, Pattern: "new/**", Source: "CLAUDE.md:2", Origin: "explicit"}}
+	if err := WriteSynced(dir, rules); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, FileName))
+	text := string(data)
+	if strings.Contains(text, legacySyncedMarker) || strings.Contains(text, "old/**") || strings.Count(text, syncedMarker) != 1 {
+		t.Fatalf("file:\n%s", text)
 	}
 }
 

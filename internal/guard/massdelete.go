@@ -174,7 +174,7 @@ func (p *Policy) deleteInProject(what string, targets []string, recursive bool, 
 	}
 	s := p.scanDelete(targets, recursive, match)
 	if s.inGit {
-		return Verdict{Deny, "delete-git-dir", what + " затронет служебную папку .git: в ней история проекта и точки восстановления. Укажи конкретные файлы или папки проекта"}
+		return Verdict{Deny, "delete-git-dir", what + " would touch the .git directory, which holds the project history and the restore points. Name specific project files or directories"}
 	}
 	// rm -r dir удаляет и файлы внутри: правила путей применяем к каждому.
 	rules := allowVerdict
@@ -196,15 +196,15 @@ func (p *Policy) deleteInProject(what string, targets []string, recursive bool, 
 		return allowVerdict
 	}
 	if p.cfg.Strict() {
-		return Verdict{Ask, "mass-delete", fmt.Sprintf("%s: больше %d файлов — нужно подтверждение пользователя", what, p.cfg.MaxDeletes)}
+		return Verdict{Ask, "mass-delete", fmt.Sprintf("%s: more than %d files; user confirmation required", what, p.cfg.MaxDeletes)}
 	}
 	if s.tooMany {
-		return Verdict{Deny, "mass-delete", fmt.Sprintf("%s: больше %d файлов, проверить их все не удалось. Удаляй по частям, по одной папке", what, maxScanFiles)}
+		return Verdict{Deny, "mass-delete", fmt.Sprintf("%s: more than %d files, too many to check them all. Delete in parts, one directory at a time", what, maxScanFiles)}
 	}
 	g, err := OpenGit(p.Root)
 	if err != nil {
 		return Verdict{Deny, "mass-delete", fmt.Sprintf(
-			"%s: больше %d файлов, а проект не под git — точку восстановления сделать нельзя. Удаляй не больше %d файлов за раз или попроси пользователя",
+			"%s: more than %d files, and the project is not under git, so no restore point can be taken. Delete at most %d files at a time or ask the user",
 			what, p.cfg.MaxDeletes, p.cfg.MaxDeletes)}
 	}
 	rel := make([]string, 0, len(s.files))
@@ -221,11 +221,11 @@ func (p *Policy) snapshotCovers(g *Git, what string, files []string) Verdict {
 	snap, _, err := g.Checkpoint(p.Now(), SnapshotMeta{Kind: KindPreDelete, Session: p.Session, Prompt: what}, p.cfg.KeepSnapshots)
 	if err != nil {
 		return Verdict{Deny, "mass-delete", fmt.Sprintf(
-			"%s: не удалось сохранить точку восстановления (%v), поэтому удаление не выполнено. Сообщи об этом пользователю", what, err)}
+			"%s: could not save a restore point (%v), so the deletion was not performed. Tell the user about it", what, err)}
 	}
 	saved, err := g.TreeFiles(snap.Tree, nil)
 	if err != nil {
-		return Verdict{Deny, "mass-delete", fmt.Sprintf("%s: не удалось проверить точку восстановления (%v). Сообщи об этом пользователю", what, err)}
+		return Verdict{Deny, "mass-delete", fmt.Sprintf("%s: could not verify the restore point (%v). Tell the user about it", what, err)}
 	}
 	var lost []string
 	for _, f := range files {
@@ -242,8 +242,8 @@ func (p *Policy) snapshotCovers(g *Git, what string, files []string) Verdict {
 		sample = sample[:3]
 	}
 	return Verdict{Deny, "mass-delete", fmt.Sprintf(
-		"%s: %d файлов не попадают в точку восстановления (git их игнорирует), откат их не вернёт: %s%s. "+
-			"Удали только то, что отслеживает git, или спроси пользователя: нужны ли ему эти файлы (пересоздаваемые папки он может перечислить в disposable_paths)",
+		"%s: %d files are not covered by the restore point (git ignores them), a rollback won't bring them back: %s%s. "+
+			"Delete only what git tracks, or ask the user whether they need these files (directories that get regenerated can be listed in disposable_paths)",
 		what, len(lost), strings.Join(sample, ", "), map[bool]string{true: " …", false: ""}[len(lost) > 3])}
 }
 
@@ -326,40 +326,40 @@ func (p *Policy) checkFind(args []word) Verdict {
 	var targets []string
 	for _, s := range starts {
 		if s.dynamic || (p.cwdUnknown && !filepath.IsAbs(p.expandHome(s.s))) {
-			return p.soft("rm-dynamic", fmt.Sprintf("find с удалением по вычисляемому пути (%s): значение неизвестно", s.s),
-				"Подставь путь явно, без переменных и cd на переменную")
+			return p.soft("rm-dynamic", fmt.Sprintf("find with deletion on a computed path (%s): its value is unknown", s.s),
+				"Write the path out explicitly, without variables and without cd into a variable")
 		}
 		abs := p.abs(s.s)
 		switch {
 		case p.inRepo(abs):
 			targets = append(targets, abs)
 		case abs == "/" || abs == p.Home || isWithin(abs, p.Home) || isWithin(abs, p.Root):
-			return Verdict{Deny, "rm-outside-repo", fmt.Sprintf("find с удалением по %s запрещён: эта папка содержит проект или домашнюю папку целиком. Укажи конкретную папку проекта", abs)}
+			return Verdict{Deny, "rm-outside-repo", fmt.Sprintf("find with deletion on %s is not allowed: this directory contains the whole project or the whole home directory. Name a specific project directory", abs)}
 		case !p.cfg.Strict() && p.isTempPath(abs):
 			// временные файлы вне проекта
 		default:
-			return p.soft("rm-outside-repo", fmt.Sprintf("find с удалением вне проекта (%s)", abs),
-				"Удаляй только файлы проекта или временные файлы в /tmp")
+			return p.soft("rm-outside-repo", fmt.Sprintf("find with deletion outside the project (%s)", abs),
+				"Delete only project files or temporary files in /tmp")
 		}
 	}
-	return p.deleteInProject("find с удалением", targets, true, match)
+	return p.deleteInProject("deleting with find", targets, true, match)
 }
 
 // checkGitClean — git clean -f в папке dir.
 func (p *Policy) checkGitClean(dir string, dirUnknown bool) Verdict {
 	if dirUnknown {
-		return p.soft("git-clean", "git clean в неизвестной папке (cd на переменную)", "Укажи путь явно: git -C <путь> clean …")
+		return p.soft("git-clean", "git clean in an unknown directory (cd into a variable)", "Give the path explicitly: git -C <path> clean …")
 	}
 	repo := findGitRoot(dir)
 	if repo == "" {
 		return allowVerdict // не git-репозиторий: git сам сообщит об ошибке
 	}
 	if !samePath(repo, findGitRoot(p.Root)) {
-		return p.soft("git-clean", fmt.Sprintf("git clean в другом репозитории (%s): точки восстановления проекта его не защищают", repo),
-			"Удаляй там конкретные файлы")
+		return p.soft("git-clean", fmt.Sprintf("git clean in another repository (%s): the project's restore points do not cover it", repo),
+			"Delete specific files there")
 	}
 	if p.cfg.Strict() {
-		return Verdict{Ask, "git-clean", "git clean удаляет неотслеживаемые файлы — нужно подтверждение пользователя"}
+		return Verdict{Ask, "git-clean", "git clean deletes untracked files; user confirmation required"}
 	}
 	g, err := OpenGit(p.Root)
 	if err != nil {

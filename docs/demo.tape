@@ -1,9 +1,9 @@
-# Сценарий демо-гифки для README. Запись: ./docs/demo/record.sh
-# (VHS в Docker, https://github.com/charmbracelet/vhs)
+# Script of the demo GIF for the README. To record: ./docs/demo/record.sh
+# (VHS in Docker, https://github.com/charmbracelet/vhs)
 #
-# История: проект работает → просим агента → запуск сломан → смотрим точки
-# восстановления → откатываем → снова работает. Русские подписи выводят
-# функции step и ask из docs/demo/setup.sh (VHS путает кириллицу при наборе).
+# The story: the project works → we ask the agent → it no longer starts → we
+# look at the restore points → roll back → it works again. The captions are
+# printed by the step and ask functions from docs/demo/setup.sh.
 
 Output docs/demo.gif
 

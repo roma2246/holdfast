@@ -13,7 +13,7 @@ type vagueRule struct{}
 
 func (vagueRule) ID() string { return "HF007" }
 func (vagueRule) Description() string {
-	return "Расплывчатые инструкции без конкретики"
+	return "Vague instructions with no specifics"
 }
 
 // Фразы, которые агент и так «знает» и которые ничего не уточняют.
@@ -39,8 +39,8 @@ func (r vagueRule) Check(doc *lint.Doc, _ *lint.Repo) []lint.Finding {
 		for _, p := range vaguePhrases {
 			if strings.Contains(line, p) {
 				out = append(out, lint.F(r.ID(), lint.Info, doc, i+1,
-					fmt.Sprintf("расплывчатая инструкция «%s»", p),
-					"замените конкретикой: какой линтер, какой стиль, какие лимиты, пример"))
+					fmt.Sprintf("vague instruction \"%s\"", p),
+					"replace it with specifics: which linter, which style, which limits, an example"))
 				break
 			}
 		}

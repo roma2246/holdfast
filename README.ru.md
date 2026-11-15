@@ -69,16 +69,17 @@ holdfast guard log       # что агенту разрешили, что зап
 
 ## Проверка и удаление
 
-`holdfast doctor` проверяет установку и для каждой проблемы печатает, как её исправить:
+`holdfast doctor` проверяет установку и для каждой проблемы печатает, как её исправить
+(сообщения утилиты, справка и подсказки агенту — на английском):
 
 ```
-✓ git установлен — git version 2.50.1
-✓ хуки Claude Code — PreToolUse и UserPromptSubmit в .claude/settings.json
-✓ бинарник для хуков: holdfast — /usr/local/bin/holdfast
-✓ holdfast.toml читается
-✓ в журнале нет свежих ошибок config-error — записей за сутки: 42
-✓ точки восстановления создаются без ошибок — за сутки: 12
-✓ точки восстановления в refs/holdfast/ — 12, последняя 3 мин назад
+✓ git is installed — git version 2.50.1
+✓ Claude Code hooks — PreToolUse and UserPromptSubmit in .claude/settings.json
+✓ binary for the hooks: holdfast — /usr/local/bin/holdfast
+✓ holdfast.toml is readable
+✓ no recent config-error entries in the log — entries in the last 24 h: 42
+✓ restore points are created without errors — in the last 24 h: 12
+✓ restore points in refs/holdfast/ — 12, the latest 3 min ago
 ```
 
 Что проверяется: git установлен; оба хука прописаны в `.claude/settings.json` или
@@ -104,10 +105,10 @@ git уберёт обычная сборка мусора (`git gc`). Затем
 
 ```
 $ holdfast lint
-CLAUDE.md:3   HF001 error    путь «src/server/» не существует
-CLAUDE.md:8   HF004 warning  противоречие: «use yarn» (строка 7) и «never use yarn»
-CLAUDE.md:15  HF002 error    «npm run e2e» — скрипта e2e нет в package.json
-    ↳ агент запустит несуществующую команду; обновите инструкцию
+CLAUDE.md:3   HF001 error    path "src/server/" does not exist
+CLAUDE.md:8   HF004 warning  contradiction: "use yarn" (line 7) and "never use yarn"
+CLAUDE.md:15  HF002 error    "npm run e2e": script e2e is not in package.json
+    ↳ the agent will run a command that doesn't exist; update the instructions
 ```
 
 | ID    | Что проверяет                                                                 | Уровень |
@@ -300,7 +301,7 @@ go test -bench=BenchmarkHook -run='^$' ./internal/guard/
 goreleaser build --snapshot --clean
 ```
 
-Структура и соглашения — в [CLAUDE.md](CLAUDE.md).
+Структура и соглашения — в [CLAUDE.md](CLAUDE.md) (на английском).
 
 ## Лицензия
 

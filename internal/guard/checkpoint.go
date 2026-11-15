@@ -43,13 +43,13 @@ func RunCheckpoint(stdin io.Reader, stdout io.Writer, env HookEnv) {
 			Target: oneLine(in.Prompt, 120), Decision: "snapshot", Rule: "error", Reason: reason})
 		_ = os.WriteFile(checkpointErrorPath(root), []byte(env.Now().Format(time.RFC3339)+" "+reason+"\n"), 0o644)
 		_ = json.NewEncoder(stdout).Encode(map[string]string{
-			"systemMessage": "holdfast: точка восстановления перед этим запросом НЕ создана (" + oneLine(reason, 200) +
-				"). Откатить изменения этого запроса будет нельзя, пока ошибка не устранена.",
+			"systemMessage": "holdfast: NO restore point was created before this prompt (" + oneLine(reason, 200) +
+				"). The changes made for this prompt can't be rolled back until the error is fixed.",
 		})
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			fail(fmt.Sprint("внутренняя ошибка: ", r))
+			fail(fmt.Sprint("internal error: ", r))
 		}
 	}()
 
@@ -80,7 +80,7 @@ func RunCheckpoint(stdin io.Reader, stdout io.Writer, env HookEnv) {
 	}
 	_ = os.Remove(checkpointErrorPath(root))
 	entry := LogEntry{Time: now.UTC(), Session: in.SessionID, Tool: "UserPromptSubmit", Target: oneLine(in.Prompt, 120),
-		Decision: "snapshot", Rule: "unchanged", Reason: "без изменений с " + snap.Name()}
+		Decision: "snapshot", Rule: "unchanged", Reason: "unchanged since " + snap.Name()}
 	if created {
 		entry.Rule, entry.Reason = "checkpoint", snap.Name()
 	}

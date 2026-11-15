@@ -12,7 +12,7 @@ func (a *app) initCmd() *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Создать holdfast.toml с настройками по умолчанию",
+		Short: "Create holdfast.toml with default settings",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root, err := a.repoRoot()
@@ -23,11 +23,11 @@ func (a *app) initCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(a.out, "Создан %s\n", path)
-			fmt.Fprintln(a.out, "Дальше: holdfast lint, holdfast guard install")
+			fmt.Fprintf(a.out, "Created %s\n", path)
+			fmt.Fprintln(a.out, "Next: holdfast lint, holdfast guard install")
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&force, "force", false, "перезаписать существующий файл")
+	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing file")
 	return cmd
 }

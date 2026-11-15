@@ -143,7 +143,7 @@ func FormatNotes(notes []Note) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("holdfast: правила проекта для файлов, с которыми ты сейчас работаешь:\n")
+	b.WriteString("holdfast: project rules for the files you are working with right now:\n")
 	for _, n := range notes {
 		fmt.Fprintf(&b, "- [%s] %s\n", n.Source, n.Text)
 	}

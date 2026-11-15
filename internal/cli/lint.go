@@ -18,13 +18,13 @@ func (a *app) lintCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "lint [PATH]",
-		Short: "Проверить файлы инструкций агента (CLAUDE.md, AGENTS.md, .cursorrules)",
-		Long: `Находит CLAUDE.md, AGENTS.md и .cursorrules в корне и вложенных папках
-и проверяет их правилами HF001–HF009. Все проверки локальные, без LLM.
+		Short: "Check agent instruction files (CLAUDE.md, AGENTS.md, .cursorrules)",
+		Long: `Finds CLAUDE.md, AGENTS.md and .cursorrules in the root and in nested
+directories and checks them with the rules HF001–HF009. All checks are local, no LLM calls.
 
-Коды выхода: 0 — нет ошибок, 1 — есть error (с --strict и warning), 2 — сбой.
-Выключить правило: disable = ["HF007"] в holdfast.toml
-или комментарием <!-- holdfast-disable HF003 --> в файле.`,
+Exit codes: 0 for no errors, 1 for errors (with --strict, warnings too), 2 for a failure.
+To disable a rule: disable = ["HF007"] in holdfast.toml
+or a <!-- holdfast-disable HF003 --> comment in the file.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if listRules {
@@ -38,7 +38,7 @@ func (a *app) lintCmd() *cobra.Command {
 				return nil
 			}
 			if format != "human" && format != "json" {
-				return fmt.Errorf("неизвестный формат %q (human или json)", format)
+				return fmt.Errorf("unknown format %q (human or json)", format)
 			}
 			path := a.dir
 			if len(args) == 1 {
@@ -47,9 +47,9 @@ func (a *app) lintCmd() *cobra.Command {
 			return a.runLint(cmd.Context(), path, format, strict)
 		},
 	}
-	cmd.Flags().StringVarP(&format, "format", "f", "human", "формат вывода: human или json")
-	cmd.Flags().BoolVar(&strict, "strict", false, "считать warning ошибкой")
-	cmd.Flags().BoolVar(&listRules, "list-rules", false, "показать список правил")
+	cmd.Flags().StringVarP(&format, "format", "f", "human", "output format: human or json")
+	cmd.Flags().BoolVar(&strict, "strict", false, "treat warnings as errors")
+	cmd.Flags().BoolVar(&listRules, "list-rules", false, "show the list of rules")
 	return cmd
 }
 
@@ -82,7 +82,7 @@ func (a *app) runLint(ctx context.Context, path, format string, strict bool) err
 		}
 	} else {
 		if len(files) == 0 {
-			fmt.Fprintf(a.out, "Файлы инструкций (%v) не найдены в %s\n", cfg.Lint.Files, root)
+			fmt.Fprintf(a.out, "No instruction files (%v) found in %s\n", cfg.Lint.Files, root)
 			return nil
 		}
 		lint.WriteHuman(a.out, len(files), findings)

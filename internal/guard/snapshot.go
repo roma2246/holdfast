@@ -32,7 +32,7 @@ const (
 const KeepBackups = 20
 
 // ErrNoSnapshot — снапшотов ещё нет.
-var ErrNoSnapshot = errors.New("снапшот не найден: сначала выполните holdfast guard start")
+var ErrNoSnapshot = errors.New("no snapshot found: run holdfast guard start first")
 
 // Snapshot — сохранённое состояние рабочего дерева.
 type Snapshot struct {
@@ -125,7 +125,7 @@ type Git struct {
 func OpenGit(dir string) (*Git, error) {
 	out, err := (&Git{Dir: dir}).run(nil, nil, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return nil, fmt.Errorf("%s не git-репозиторий: снапшоты работают через git", dir)
+		return nil, fmt.Errorf("%s is not a git repository: snapshots work through git", dir)
 	}
 	return &Git{Dir: strings.TrimSpace(out)}, nil
 }
@@ -201,8 +201,8 @@ func (g *Git) WriteTree() (string, error) {
 	}
 	tree, err := g.writeTreeFresh()
 	if err != nil && strings.Contains(err.Error(), "does not have a commit checked out") {
-		return "", fmt.Errorf("в проекте есть вложенный git-репозиторий без коммитов — git не может сохранить снимок. "+
-			"Сделайте в нём коммит, удалите его или добавьте в .gitignore (%w)", err)
+		return "", fmt.Errorf("the project contains a nested git repository without commits, so git cannot save a snapshot; "+
+			"make a commit in it, delete it or add it to .gitignore (%w)", err)
 	}
 	return tree, err
 }
@@ -235,7 +235,7 @@ func (g *Git) writeTreeFresh() (string, error) {
 func (g *Git) writeTreeCached() (string, error) {
 	gd := gitDir(g.Dir)
 	if _, ok := g.head(); gd == "" || !ok {
-		return "", errors.New("нет .git или коммитов")
+		return "", errors.New("no .git or no commits")
 	}
 	dir := filepath.Join(gd, "holdfast")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -401,7 +401,7 @@ func (g *Git) SnapshotAt(n int) (Snapshot, error) {
 		return Snapshot{}, ErrNoSnapshot
 	}
 	if n < 1 || n > len(snaps) {
-		return Snapshot{}, fmt.Errorf("точки %d нет: всего %d (см. holdfast guard list)", n, len(snaps))
+		return Snapshot{}, fmt.Errorf("there is no restore point %d: only %d exist (see holdfast guard list)", n, len(snaps))
 	}
 	return snaps[n-1], nil
 }
@@ -429,7 +429,7 @@ func (g *Git) FindSnapshot(name string) (Snapshot, error) {
 			return s, nil
 		}
 	}
-	return Snapshot{}, fmt.Errorf("снапшот %q не найден в этом рабочем дереве", name)
+	return Snapshot{}, fmt.Errorf("snapshot %q not found in this working tree", name)
 }
 
 // TreeFiles возвращает множество файлов дерева tree под путями paths
@@ -561,7 +561,7 @@ type RollbackPlan struct {
 func (g *Git) PlanRollback(snap Snapshot) (RollbackPlan, error) {
 	plan := RollbackPlan{Snapshot: snap}
 	if wt := snap.Meta.Worktree; wt != "" && !samePath(wt, g.Dir) {
-		return plan, fmt.Errorf("снимок %s сделан в другом рабочем дереве (%s) — откат отменён", snap.Name(), wt)
+		return plan, fmt.Errorf("snapshot %s was taken in another working tree (%s); rollback cancelled", snap.Name(), wt)
 	}
 	snapTree := snap.Commit + "^{tree}"
 	base, err := g.WriteTree()
@@ -598,7 +598,7 @@ func (g *Git) PlanRollback(snap Snapshot) (RollbackPlan, error) {
 		}
 		sort.Strings(plan.Hidden)
 		if plan.Tree, err = g.treeWithForced(base, plan.Hidden); err != nil {
-			return plan, fmt.Errorf("не удалось сохранить файлы, которые перезапишет откат (%s): %w — откат отменён",
+			return plan, fmt.Errorf("could not save the files the rollback would overwrite (%s): %w; rollback cancelled",
 				strings.Join(plan.Hidden, ", "), err)
 		}
 	}
@@ -625,8 +625,8 @@ func (g *Git) guardNestedRepos(snapTree string, plan *RollbackPlan) error {
 	for _, m := range plan.Changes.Modified {
 		for repo := range nested {
 			if (m == repo && !inSnap[repo]) || strings.HasPrefix(m, repo+"/") {
-				return fmt.Errorf("на месте %s сейчас вложенный git-репозиторий (%s): его содержимое нельзя сохранить в резервной копии — откат отменён. "+
-					"Перенесите или удалите этот репозиторий и повторите", m, repo)
+				return fmt.Errorf("%s is currently occupied by a nested git repository (%s): its contents can't be saved in the backup, so the rollback is cancelled; "+
+					"move or delete that repository and try again", m, repo)
 			}
 		}
 	}
@@ -696,7 +696,7 @@ func (g *Git) treeWithForced(base string, paths []string) (string, error) {
 			}
 			if d.IsDir() {
 				if d.Name() == ".git" {
-					return fmt.Errorf("%s содержит вложенный git-репозиторий", rel)
+					return fmt.Errorf("%s contains a nested git repository", rel)
 				}
 				return nil
 			}
@@ -705,7 +705,7 @@ func (g *Git) treeWithForced(base string, paths []string) (string, error) {
 				return err
 			}
 			if !saved[filepath.ToSlash(r)] {
-				return fmt.Errorf("%s не удалось сохранить", filepath.ToSlash(r))
+				return fmt.Errorf("could not save %s", filepath.ToSlash(r))
 			}
 			return nil
 		})
@@ -737,9 +737,9 @@ func (g *Git) Rollback(snap Snapshot, now time.Time) (Changes, Snapshot, error) 
 		return Changes{}, Snapshot{}, err
 	}
 	backup, err := g.snapshotFromTree(g.backupPrefix(), now, plan.Tree,
-		SnapshotMeta{Kind: KindBackup, Prompt: "перед откатом к " + snap.Name()})
+		SnapshotMeta{Kind: KindBackup, Prompt: "before rollback to " + snap.Name()})
 	if err != nil {
-		return Changes{}, Snapshot{}, fmt.Errorf("резервная копия перед откатом: %w", err)
+		return Changes{}, Snapshot{}, fmt.Errorf("backup before rollback: %w", err)
 	}
 	ch := plan.Changes
 

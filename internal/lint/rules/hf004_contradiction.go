@@ -14,7 +14,7 @@ type contradictionRule struct{}
 
 func (contradictionRule) ID() string { return "HF004" }
 func (contradictionRule) Description() string {
-	return "Противоречие: одно и то же в «всегда/use» и «никогда/don't»"
+	return "Contradiction: the same thing under \"always/use\" and \"never/don't\""
 }
 
 const (
@@ -115,8 +115,8 @@ func (r contradictionRule) Check(doc *lint.Doc, _ *lint.Repo) []lint.Finding {
 				first, second = second, first
 			}
 			out = append(out, lint.F(r.ID(), lint.Warning, doc, second.line,
-				fmt.Sprintf("противоречие: «%s» (строка %d) и «%s»", first.text, first.line, second.text),
-				"оставьте одно правило — агент не знает, какому следовать"))
+				fmt.Sprintf("contradiction: \"%s\" (line %d) and \"%s\"", first.text, first.line, second.text),
+				"keep one rule: the agent doesn't know which one to follow"))
 		}
 	}
 	return out

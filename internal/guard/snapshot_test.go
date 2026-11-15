@@ -207,7 +207,7 @@ func TestCheckpointDedupAndPrune(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)
-	meta := SnapshotMeta{Kind: KindCheckpoint, Session: "s1", Prompt: "добавь\nлогирование   в app.py"}
+	meta := SnapshotMeta{Kind: KindCheckpoint, Session: "s1", Prompt: "add\nlogging   to app.py"}
 
 	s1, created, err := g.Checkpoint(now, meta, 3)
 	if err != nil || !created {
@@ -230,7 +230,7 @@ func TestCheckpointDedupAndPrune(t *testing.T) {
 		t.Fatalf("должно остаться 3 точки, осталось %d", len(snaps))
 	}
 	m := snaps[0].Meta
-	if m.Kind != KindCheckpoint || m.Session != "s1" || m.Prompt != "добавь логирование в app.py" || snaps[0].Tree == "" {
+	if m.Kind != KindCheckpoint || m.Session != "s1" || m.Prompt != "add logging to app.py" || snaps[0].Tree == "" {
 		t.Fatalf("метаданные: %+v tree=%q", m, snaps[0].Tree)
 	}
 	if at, err := g.SnapshotAt(2); err != nil || at.Ref != snaps[1].Ref {
@@ -258,7 +258,7 @@ func TestCheckpointDedupAndPrune(t *testing.T) {
 func TestRunCheckpointHook(t *testing.T) {
 	dir := gitRepo(t, true)
 	env := testEnv(dir)
-	in := `{"session_id":"sess-42","cwd":"` + dir + `","hook_event_name":"UserPromptSubmit","prompt":"почини тесты"}`
+	in := `{"session_id":"sess-42","cwd":"` + dir + `","hook_event_name":"UserPromptSubmit","prompt":"fix the tests"}`
 
 	RunCheckpoint(strings.NewReader(in), io.Discard, env)
 	write(t, dir, "a.txt", "agent edit\n")
@@ -267,7 +267,7 @@ func TestRunCheckpointHook(t *testing.T) {
 
 	g, _ := OpenGit(dir)
 	snaps, _ := g.Snapshots()
-	if len(snaps) != 2 || snaps[0].Meta.Prompt != "почини тесты" {
+	if len(snaps) != 2 || snaps[0].Meta.Prompt != "fix the tests" {
 		t.Fatalf("точки: %+v", snaps)
 	}
 	if snaps[0].Meta.Session != "sess-42" || !samePath(snaps[0].Meta.Worktree, dir) {
@@ -301,9 +301,9 @@ func TestWriteTreeCachedMatchesFresh(t *testing.T) {
 		}
 	}
 	same("чистое дерево")
-	write(t, dir, "a.txt", "изменён\n")
-	write(t, dir, "new/untracked.txt", "новый\n")
-	write(t, dir, "debug.log", "игнорируется\n")
+	write(t, dir, "a.txt", "changed\n")
+	write(t, dir, "new/untracked.txt", "new\n")
+	write(t, dir, "debug.log", "ignored\n")
 	same("правка, новый файл, игнорируемый файл")
 	os.Remove(filepath.Join(dir, "b.txt"))
 	same("удаление отслеживаемого файла")
@@ -314,7 +314,7 @@ func TestWriteTreeCachedMatchesFresh(t *testing.T) {
 	git(t, dir, "add", "-A")
 	git(t, dir, "add", "-f", "debug.log")
 	git(t, dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "second")
-	write(t, dir, "debug.log", "изменён после коммита\n")
+	write(t, dir, "debug.log", "changed after the commit\n")
 	same("после коммита, отслеживаемый игнорируемый файл")
 	os.Remove(filepath.Join(dir, "new", "untracked.txt"))
 	same("удаление игнорируемого неотслеживаемого файла")

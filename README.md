@@ -21,8 +21,6 @@ cd my-project && holdfast guard install                       # once per project
 
 That's it: a restore point is now saved before every prompt you send.
 
-> **Note:** the CLI's messages, help text and the hints it gives the agent are currently in Russian.
-
 ## What it does
 
 - **Restore points.** Before every prompt you send to the agent, Holdfast saves the state of
@@ -89,8 +87,7 @@ holdfast guard log       # what the agent was allowed, what was denied, and why
 
 ## Checking and uninstalling
 
-`holdfast doctor` checks the installation and, for every problem, prints how to fix it
-(the output is in Russian; here it is translated):
+`holdfast doctor` checks the installation and, for every problem, prints how to fix it:
 
 ```
 ✓ git is installed — git version 2.50.1
@@ -154,14 +151,11 @@ do instead of stopping to ask you.
 
 ```
 $ holdfast lint
-CLAUDE.md:3   HF001 error    путь «src/server/» не существует
-CLAUDE.md:8   HF004 warning  противоречие: «use yarn» (строка 7) и «never use yarn»
-CLAUDE.md:15  HF002 error    «npm run e2e» — скрипта e2e нет в package.json
-    ↳ агент запустит несуществующую команду; обновите инструкцию
+CLAUDE.md:3   HF001 error    path "src/server/" does not exist
+CLAUDE.md:8   HF004 warning  contradiction: "use yarn" (line 7) and "never use yarn"
+CLAUDE.md:15  HF002 error    "npm run e2e": script e2e is not in package.json
+    ↳ the agent will run a command that doesn't exist; update the instructions
 ```
-
-(Output is in Russian: path «src/server/» does not exist; contradiction between line 7 and
-line 8; there is no `e2e` script in package.json.)
 
 | ID    | What it checks                                                                 | Level   |
 |-------|--------------------------------------------------------------------------------|---------|
@@ -358,7 +352,7 @@ go test -bench=BenchmarkHook -run='^$' ./internal/guard/
 goreleaser build --snapshot --clean
 ```
 
-Structure and conventions are in [CLAUDE.md](CLAUDE.md) (in Russian).
+Structure and conventions are in [CLAUDE.md](CLAUDE.md).
 
 ## License
 

@@ -13,7 +13,7 @@ type unsyncedRule struct{}
 
 func (unsyncedRule) ID() string { return "HF009" }
 func (unsyncedRule) Description() string {
-	return "В инструкции есть запрет, которого нет в политике guard"
+	return "The instructions contain a prohibition that is not in the guard policy"
 }
 
 func (r unsyncedRule) Check(doc *lint.Doc, repo *lint.Repo) []lint.Finding {
@@ -23,8 +23,8 @@ func (r unsyncedRule) Check(doc *lint.Doc, repo *lint.Repo) []lint.Finding {
 			continue
 		}
 		out = append(out, lint.F(r.ID(), lint.Warning, doc, rule.Line,
-			fmt.Sprintf("запрет «%s» не отражён в политике guard", rule.Text),
-			"запустите holdfast sync — тогда хук будет проверять это правило, а не надеяться на агента"))
+			fmt.Sprintf("the prohibition \"%s\" is not reflected in the guard policy", rule.Text),
+			"run holdfast sync: then the hook enforces this rule instead of relying on the agent"))
 	}
 	return out
 }

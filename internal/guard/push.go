@@ -186,14 +186,14 @@ func refspecTarget(spec, cur string, curKnown bool, repo string) pushTarget {
 	}
 	switch {
 	case dst == "" && src == "":
-		t.unclear = "refspec «:» отправляет все ветки с одинаковыми именами"
+		t.unclear = "the refspec \":\" pushes every branch with a matching name"
 		return t
 	case strings.Contains(dst, "*"):
-		t.unclear = fmt.Sprintf("refspec %q отправляет сразу несколько веток", spec)
+		t.unclear = fmt.Sprintf("the refspec %q pushes several branches at once", spec)
 		return t
 	case dst == "HEAD" || dst == "@":
 		if !curKnown {
-			t.unclear = "текущая ветка меняется в этой же команде"
+			t.unclear = "the current branch changes within this same command"
 			return t
 		}
 		dst = cur
@@ -279,7 +279,7 @@ func (p *Policy) checkPush(g gitCall) Verdict {
 		}
 	}
 	if p.cfg.Strict() {
-		return Verdict{Ask, "git-push", "git push отправляет код на сервер — нужно подтверждение пользователя"}
+		return Verdict{Ask, "git-push", "git push sends code to the server; user confirmation required"}
 	}
 
 	remote := repoOpt
@@ -294,19 +294,19 @@ func (p *Policy) checkPush(g gitCall) Verdict {
 	}
 	switch {
 	case deleting:
-		return Verdict{Deny, "git-push-delete", "удаление веток на сервере необратимо. Сообщи пользователю, какую ветку нужно удалить"}
+		return Verdict{Deny, "git-push-delete", "deleting branches on the server is irreversible. Tell the user which branch needs to be deleted"}
 	case tags:
 		return tagPushVerdict("")
 	case all:
-		return Verdict{Deny, "git-push-all", "push всех веток сразу запрещён. Запушь только свою рабочую ветку: git push origin <ветка>"}
+		return Verdict{Deny, "git-push-all", "pushing all branches at once is not allowed. Push only your working branch: git push origin <branch>"}
 	}
 
 	if g.dirUnknown {
-		return p.soft("git-push-branch", "не удалось определить, из какого репозитория push (cd на переменную, --git-dir)",
-			"Укажи путь явно: git -C <путь> push origin <ветка>")
+		return p.soft("git-push-branch", "could not determine which repository the push comes from (cd into a variable, --git-dir)",
+			"Give the path explicitly: git -C <path> push origin <branch>")
 	}
 	if p.gitEnv {
-		return p.unclearPush("переменные GIT_DIR / GIT_CONFIG_* меняют репозиторий или настройки push")
+		return p.unclearPush("the GIT_DIR / GIT_CONFIG_* variables change the repository or the push settings")
 	}
 	repo := findGitRoot(g.dir)
 	if repo == "" {
@@ -317,7 +317,7 @@ func (p *Policy) checkPush(g gitCall) Verdict {
 	conf := readGitConfig(repo, p.Home)
 	unclear := ""
 	if conf.addArgs(g.config, p.Home) {
-		unclear = "значение git -c / --config-env вычисляется при запуске"
+		unclear = "the value of git -c / --config-env is computed at run time"
 	}
 	cur, curKnown := p.branchOf(repo)
 
@@ -326,18 +326,18 @@ func (p *Policy) checkPush(g gitCall) Verdict {
 	case remote == nil:
 		remotes = conf.pushRemotes(cur)
 	case remote.dynamic:
-		unclear = "remote задан переменной"
+		unclear = "the remote is given by a variable"
 	default:
 		remotes = []string{remote.s}
 	}
 	for _, r := range remotes {
 		if conf.isTrue("remote." + r + ".mirror") {
 			return Verdict{Deny, "git-push-force", fmt.Sprintf(
-				"remote.%s.mirror = true: push зеркалирует все ветки и перезаписывает историю на сервере. Сделай обычный push в свою ветку: git -c remote.%s.mirror=false push %s <ветка>", r, r, r)}
+				"remote.%s.mirror = true: the push mirrors all branches and overwrites history on the server. Do a regular push to your own branch: git -c remote.%s.mirror=false push %s <branch>", r, r, r)}
 		}
 	}
 	if !noFollowTags && conf.isTrue("push.followtags") {
-		return tagPushVerdict("в конфигурации git включён push.followTags. Добавь --no-follow-tags: git push --no-follow-tags origin <ветка>")
+		return tagPushVerdict("push.followTags is enabled in the git configuration. Add --no-follow-tags: git push --no-follow-tags origin <branch>")
 	}
 
 	var targets []pushTarget
@@ -346,7 +346,7 @@ func (p *Policy) checkPush(g gitCall) Verdict {
 		switch {
 		case unclear != "":
 		case p.gitConfigChanged:
-			unclear = "команда сама меняет настройки git перед push"
+			unclear = "the command itself changes git settings before the push"
 		case len(specs) > 0:
 			// remote.<имя>.push заменяет push.default
 			for _, s := range specs {
@@ -361,7 +361,7 @@ func (p *Policy) checkPush(g gitCall) Verdict {
 				switch strings.ToLower(mode) {
 				case "nothing":
 				case "matching":
-					unclear = "push.default = matching отправит все ветки, которые есть и локально, и на сервере"
+					unclear = "push.default = matching pushes every branch that exists both locally and on the server"
 				case "upstream", "tracking":
 					for _, m := range conf["branch."+cur+".merge"] {
 						targets = append(targets, pushTarget{branch: strings.TrimPrefix(m, "refs/heads/")})
@@ -369,7 +369,7 @@ func (p *Policy) checkPush(g gitCall) Verdict {
 					fallthrough // и проверка текущей ветки, если upstream не задан
 				default: // simple, current
 					if !curKnown {
-						unclear = "текущая ветка меняется в этой же команде"
+						unclear = "the current branch changes within this same command"
 					}
 					targets = append(targets, pushTarget{branch: cur})
 				}
@@ -378,14 +378,14 @@ func (p *Policy) checkPush(g gitCall) Verdict {
 	}
 	for _, r := range refspecs {
 		if r.dynamic {
-			unclear = "ветка задана переменной"
+			unclear = "the branch is given by a variable"
 			continue
 		}
 		targets = append(targets, refspecTarget(r.s, cur, curKnown, repo))
 		if !strings.Contains(r.s, ":") {
 			// git push origin feature с remote.origin.push=feature:main уйдёт в main
 			if p.gitConfigChanged {
-				unclear = "команда сама меняет настройки git перед push"
+				unclear = "the command itself changes git settings before the push"
 			}
 			for _, s := range specs {
 				if dst, ok := mapRefspec(s, r.s, cur); ok {
@@ -413,12 +413,12 @@ func (p *Policy) checkPush(g gitCall) Verdict {
 	}
 	for _, t := range targets {
 		if t.branch == "" {
-			return Verdict{Deny, "git-push-branch", "не удалось определить ветку (detached HEAD?). Укажи ветку явно: git push origin <ветка>"}
+			return Verdict{Deny, "git-push-branch", "could not determine the branch (detached HEAD?). Name the branch explicitly: git push origin <branch>"}
 		}
 		for _, protected := range p.cfg.ProtectedBranches {
 			if t.branch == protected {
 				return Verdict{Deny, "git-push-protected", fmt.Sprintf(
-					"push в защищённую ветку %s запрещён. Создай рабочую ветку (git switch -c <имя>), запушь её (git push -u origin <имя>) и предложи pull request", t.branch)}
+					"pushing to the protected branch %s is not allowed. Create a working branch (git switch -c <name>), push it (git push -u origin <name>) and propose a pull request", t.branch)}
 			}
 		}
 	}
@@ -426,17 +426,17 @@ func (p *Policy) checkPush(g gitCall) Verdict {
 }
 
 func forcePushVerdict() Verdict {
-	return Verdict{Deny, "git-push-force", "git push --force переписывает историю на сервере. Сделай обычный push; если история разошлась — создай новую ветку и запушь её"}
+	return Verdict{Deny, "git-push-force", "git push --force rewrites history on the server. Do a regular push; if the histories have diverged, create a new branch and push that"}
 }
 
 func tagPushVerdict(reason string) Verdict {
 	if reason == "" {
-		reason = "Создай тег локально и предложи пользователю его запушить"
+		reason = "Create the tag locally and suggest that the user push it"
 	}
-	return Verdict{Deny, "git-push-tags", "push тегов обычно запускает релиз. " + reason}
+	return Verdict{Deny, "git-push-tags", "pushing tags usually triggers a release. " + reason}
 }
 
 func (p *Policy) unclearPush(why string) Verdict {
-	return p.soft("git-push-unclear", "не удалось точно определить, в какую ветку уйдёт push: "+why,
-		"Укажи ветку явно и без переменных: git push origin <ветка>")
+	return p.soft("git-push-unclear", "could not work out exactly which branch the push would go to: "+why,
+		"Name the branch explicitly and without variables: git push origin <branch>")
 }

@@ -21,25 +21,25 @@ func (a *app) syncCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "sync",
-		Short: "Перенести запреты из CLAUDE.md в политику guard ([guard.synced])",
-		Long: `Читает файлы инструкций и превращает запреты в проверяемые политики guard.
+		Short: "Turn the prohibitions in CLAUDE.md into guard policy ([guard.synced])",
+		Long: `Reads the instruction files and turns prohibitions into enforceable guard policies.
 
-Явный блок применяется сразу:
+An explicit block is applied right away:
   <!-- holdfast
   deny-paths: migrations/**, .github/workflows/**
   ask-commands: docker compose down
   -->
 
-Фразы вида «never edit X», «не трогай X», «never run ` + "`X`" + `» находятся
-эвристически и попадают в конфиг только после вашего подтверждения.`,
+Phrases like "never edit X", "don't touch X", "never run ` + "`X`" + `" are found
+heuristically and get into the config only after you confirm them.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.runSync(yes, noHeuristics, dryRun)
 		},
 	}
-	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "принять все найденные эвристические правила")
-	cmd.Flags().BoolVar(&noHeuristics, "no-heuristics", false, "только явные блоки <!-- holdfast ... -->")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "показать правила, но не менять holdfast.toml")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "accept all heuristic rules that were found")
+	cmd.Flags().BoolVar(&noHeuristics, "no-heuristics", false, "only explicit <!-- holdfast ... --> blocks")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show the rules without changing holdfast.toml")
 	return cmd
 }
 
@@ -92,35 +92,35 @@ func (a *app) runSync(yes, noHeuristics, dryRun bool) error {
 	}
 
 	if len(accepted) > 0 {
-		fmt.Fprintln(a.out, "Правила:")
+		fmt.Fprintln(a.out, "Rules:")
 		for _, r := range accepted {
 			fmt.Fprintf(a.out, "  %-13s %-30s  %s (%s)\n", r.Kind, r.Pattern, r.Source, r.Origin)
 		}
 	}
 	if len(pending) > 0 {
-		fmt.Fprintln(a.out, "\nНайдены возможные запреты в тексте (эвристика):")
+		fmt.Fprintln(a.out, "\nPossible prohibitions found in the text (heuristics):")
 		for _, r := range pending {
-			fmt.Fprintf(a.out, "  %s  «%s»\n    → %s %s\n", r.Source(), r.Text, r.Kind, r.Pattern)
+			fmt.Fprintf(a.out, "  %s  \"%s\"\n    → %s %s\n", r.Source(), r.Text, r.Kind, r.Pattern)
 			if dryRun {
 				continue
 			}
-			if yes || a.confirm("    Добавить в политику?") {
+			if yes || a.confirm("    Add to the policy?") {
 				accepted = append(accepted, r.ToSynced())
 			}
 		}
 	}
 
 	if dryRun {
-		fmt.Fprintln(a.out, "\n--dry-run: holdfast.toml не изменён")
+		fmt.Fprintln(a.out, "\n--dry-run: holdfast.toml not changed")
 		return nil
 	}
 	if len(accepted) == 0 && len(cfg.Guard.Synced.Rules) == 0 {
-		fmt.Fprintln(a.out, "Запретов для синхронизации не найдено")
+		fmt.Fprintln(a.out, "No prohibitions to sync were found")
 		return nil
 	}
 	if err := config.WriteSynced(root, accepted); err != nil {
 		return err
 	}
-	fmt.Fprintf(a.out, "\nЗаписано правил: %d → %s [guard.synced]\n", len(accepted), config.FileName)
+	fmt.Fprintf(a.out, "\nRules written: %d → %s [guard.synced]\n", len(accepted), config.FileName)
 	return nil
 }

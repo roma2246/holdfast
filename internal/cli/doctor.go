@@ -29,13 +29,13 @@ type check struct {
 func (a *app) doctorCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor",
-		Short: "Проверить, что Holdfast подключён и работает",
-		Long: `Проверяет установку и печатает ✓ или ✗ с подсказкой, как исправить:
-  git установлен; хуки прописаны в .claude/settings.json или settings.local.json;
-  Claude Code найдёт бинарник holdfast; holdfast.toml читается; в журнале нет
-  свежих ошибок; точки восстановления есть.
+		Short: "Check that Holdfast is connected and working",
+		Long: `Checks the installation and prints ✓ or ✗ with a hint on how to fix it:
+  git is installed; the hooks are registered in .claude/settings.json or
+  settings.local.json; Claude Code will find the holdfast binary; holdfast.toml
+  is readable; the log has no recent errors; restore points exist.
 
-Код выхода: 0 — всё в порядке, 2 — есть проблемы.`,
+Exit code: 0 if everything is fine, 2 if there are problems.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root, err := a.repoRoot()
@@ -90,18 +90,18 @@ func (a *app) printChecks(root string, checks []check) {
 	}
 	fmt.Fprintln(a.out)
 	if problems == 0 {
-		fmt.Fprintln(a.out, "Всё в порядке: действия агента проверяются, точки восстановления создаются.")
+		fmt.Fprintln(a.out, "All good: the agent's actions are checked and restore points are being created.")
 		return
 	}
-	fmt.Fprintf(a.out, "Проблем: %d\n", problems)
+	fmt.Fprintf(a.out, "Problems: %d\n", problems)
 }
 
 func checkGitInstalled() (bool, check) {
-	c := check{title: "git установлен"}
+	c := check{title: "git is installed"}
 	path, err := exec.LookPath("git")
 	if err != nil {
-		c.detail = "git не найден в PATH"
-		c.hint = "установите git: точки восстановления и откат работают через него"
+		c.detail = "git not found in PATH"
+		c.hint = "install git: restore points and rollback work through it"
 		return false, c
 	}
 	c.ok = true
@@ -114,11 +114,11 @@ func checkGitInstalled() (bool, check) {
 
 // checkHooks ищет оба хука holdfast в настройках Claude Code.
 func checkHooks(root string) ([]guard.InstalledHook, check) {
-	c := check{title: "хуки Claude Code"}
+	c := check{title: "Claude Code hooks"}
 	hooks, err := guard.FindHooks(root)
 	if err != nil {
 		c.detail = err.Error()
-		c.hint = "исправьте JSON в файле: пока он не читается, Claude Code не вызовет хуки"
+		c.hint = "fix the JSON in the file: until it can be read, Claude Code won't call the hooks"
 		return hooks, c
 	}
 	files := map[string]bool{}
@@ -129,18 +129,18 @@ func checkHooks(root string) ([]guard.InstalledHook, check) {
 	}
 	var missing []string
 	if !have["PreToolUse"] {
-		missing = append(missing, "PreToolUse → holdfast guard check (проверка действий агента)")
+		missing = append(missing, "PreToolUse → holdfast guard check (checks the agent's actions)")
 	}
 	if !have["UserPromptSubmit"] {
-		missing = append(missing, "UserPromptSubmit → holdfast guard checkpoint (точки восстановления)")
+		missing = append(missing, "UserPromptSubmit → holdfast guard checkpoint (restore points)")
 	}
 	if len(missing) > 0 {
-		c.detail = "нет " + strings.Join(missing, "; ")
-		c.hint = "holdfast guard install (или --local, чтобы не коммитить настройки) и перезапустите сессию Claude Code"
+		c.detail = "missing " + strings.Join(missing, "; ")
+		c.hint = "holdfast guard install (or --local to keep the settings out of commits), then restart the Claude Code session"
 		return hooks, c
 	}
 	c.ok = true
-	c.detail = "PreToolUse и UserPromptSubmit в " + strings.Join(sortedKeys(files), ", ")
+	c.detail = "PreToolUse and UserPromptSubmit in " + strings.Join(sortedKeys(files), ", ")
 	return hooks, c
 }
 
@@ -156,7 +156,7 @@ func checkBinaries(root string, hooks []guard.InstalledHook) []check {
 	}
 	var out []check
 	for _, bin := range sortedKeys(bins) {
-		c := check{title: "бинарник для хуков: " + bin}
+		c := check{title: "binary for the hooks: " + bin}
 		path, err := resolveBin(root, bin)
 		if err != nil {
 			c.detail = err.Error()
@@ -176,7 +176,7 @@ func resolveBin(root, bin string) (string, error) {
 	if !strings.Contains(bin, "/") {
 		path, err := exec.LookPath(bin)
 		if err != nil {
-			return "", fmt.Errorf("%s не найден в PATH", bin)
+			return "", fmt.Errorf("%s not found in PATH", bin)
 		}
 		return path, nil
 	}
@@ -187,9 +187,9 @@ func resolveBin(root, bin string) (string, error) {
 	fi, err := os.Stat(path)
 	switch {
 	case err != nil:
-		return "", fmt.Errorf("файла %s нет", path)
+		return "", fmt.Errorf("%s does not exist", path)
 	case fi.IsDir() || fi.Mode().Perm()&0o111 == 0: // ни одного бита «x»
-		return "", fmt.Errorf("%s не исполняемый файл", path)
+		return "", fmt.Errorf("%s is not an executable file", path)
 	}
 	return path, nil
 }
@@ -197,20 +197,20 @@ func resolveBin(root, bin string) (string, error) {
 func binHint(bin string) string {
 	self, err := os.Executable()
 	if err != nil || strings.Contains(bin, "/") {
-		return "переустановите holdfast или пропишите хуки заново с верным путём: holdfast guard uninstall && holdfast guard install --bin /путь/к/holdfast"
+		return "reinstall holdfast or register the hooks again with the right path: holdfast guard uninstall && holdfast guard install --bin /path/to/holdfast"
 	}
-	return fmt.Sprintf("добавьте папку с holdfast в PATH или пропишите полный путь: holdfast guard uninstall && holdfast guard install --bin %s", self)
+	return fmt.Sprintf("add the directory with holdfast to PATH or register the full path: holdfast guard uninstall && holdfast guard install --bin %s", self)
 }
 
 func checkConfig(root string) check {
-	c := check{title: config.FileName + " читается"}
+	c := check{title: config.FileName + " is readable"}
 	if _, err := os.Stat(filepath.Join(root, config.FileName)); errors.Is(err, fs.ErrNotExist) {
-		c.ok, c.detail = true, "файла нет — действуют встроенные правила"
+		c.ok, c.detail = true, "no such file, the built-in rules apply"
 		return c
 	}
 	if _, err := config.Load(root); err != nil {
 		c.detail = err.Error()
-		c.hint = "исправьте файл: пока он не читается, правила проекта не применяются, а действия агента требуют подтверждения"
+		c.hint = "fix the file: until it can be read, the project rules are not applied and the agent's actions need confirmation"
 		return c
 	}
 	c.ok = true
@@ -228,8 +228,8 @@ const recentWindow = 24 * time.Hour
 func checkLog(root string, now time.Time) []check {
 	entries, err := guard.ReadLog(root)
 	if err != nil {
-		return []check{{title: "журнал .holdfast/log.jsonl", detail: err.Error(),
-			hint: "проверьте права на папку .holdfast/"}}
+		return []check{{title: "the log .holdfast/log.jsonl", detail: err.Error(),
+			hint: "check the permissions on the .holdfast/ directory"}}
 	}
 	dayAgo := now.Add(-recentWindow)
 	// Ошибка config-error свежая, если она записана позже последней правки
@@ -261,40 +261,40 @@ func checkLog(root string, now time.Time) []check {
 		}
 	}
 
-	logCheck := check{title: "в журнале нет свежих ошибок config-error", ok: cfgErrors == 0}
+	logCheck := check{title: "no recent config-error entries in the log", ok: cfgErrors == 0}
 	if cfgErrors > 0 {
-		logCheck.detail = fmt.Sprintf("%d после последнего изменения %s: %s", cfgErrors, config.FileName, truncate(lastCfgErr, 120))
-		logCheck.hint = "исправьте " + config.FileName + " и проверьте: holdfast guard log --decision ask"
+		logCheck.detail = fmt.Sprintf("%d since the last change to %s: %s", cfgErrors, config.FileName, truncate(lastCfgErr, 120))
+		logCheck.hint = "fix " + config.FileName + " and check: holdfast guard log --decision ask"
 	} else {
-		logCheck.detail = fmt.Sprintf("записей за сутки: %d", total)
+		logCheck.detail = fmt.Sprintf("entries in the last 24 h: %d", total)
 	}
 
-	cpCheck := check{title: "точки восстановления создаются без ошибок", ok: true}
+	cpCheck := check{title: "restore points are created without errors", ok: true}
 	if msg := guard.LastCheckpointError(root); msg != "" {
 		cpCheck.ok = false
 		cpCheck.detail = truncate(msg, 160)
-		cpCheck.hint = "устраните причину; следующая точка создастся перед следующим запросом (или вручную: holdfast guard start)"
+		cpCheck.hint = "fix the cause; the next restore point will be created before the next prompt (or manually: holdfast guard start)"
 	} else if snapErrors > 0 {
-		cpCheck.detail = fmt.Sprintf("за сутки неудачных точек: %d, после них точки создаются", snapErrors)
+		cpCheck.detail = fmt.Sprintf("failed restore points in the last 24 h: %d, later ones were created fine", snapErrors)
 	} else if checkpoints > 0 {
-		cpCheck.detail = fmt.Sprintf("за сутки: %d", checkpoints)
+		cpCheck.detail = fmt.Sprintf("in the last 24 h: %d", checkpoints)
 	} else {
-		cpCheck.detail = "ошибок нет"
+		cpCheck.detail = "no errors"
 	}
 	return []check{logCheck, cpCheck}
 }
 
 func checkSnapshots(root string, gitOK bool, now time.Time) check {
-	c := check{title: "точки восстановления в " + guard.SnapshotRefPrefix}
+	c := check{title: "restore points in " + guard.SnapshotRefPrefix}
 	if !gitOK {
-		c.detail = "без git точек восстановления нет"
-		c.hint = "установите git"
+		c.detail = "there are no restore points without git"
+		c.hint = "install git"
 		return c
 	}
 	g, err := guard.OpenGit(root)
 	if err != nil {
-		c.detail = "папка не в git-репозитории"
-		c.hint = "git init: точки восстановления хранятся в git"
+		c.detail = "the directory is not in a git repository"
+		c.hint = "git init: restore points are stored in git"
 		return c
 	}
 	snaps, err := g.Snapshots()
@@ -303,12 +303,12 @@ func checkSnapshots(root string, gitOK bool, now time.Time) check {
 		return c
 	}
 	if len(snaps) == 0 {
-		c.detail = "пока нет ни одной"
-		c.hint = "точка появится перед следующим запросом к Claude Code (нужны хуки); вручную: holdfast guard start"
+		c.detail = "none yet"
+		c.hint = "a restore point will appear before the next prompt to Claude Code (the hooks are required); manually: holdfast guard start"
 		return c
 	}
 	c.ok = true
-	c.detail = fmt.Sprintf("%d, последняя %s", len(snaps), humanAgo(now.Sub(snaps[0].Time)))
+	c.detail = fmt.Sprintf("%d, the latest %s", len(snaps), humanAgo(now.Sub(snaps[0].Time)))
 	return c
 }
 

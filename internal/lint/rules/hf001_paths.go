@@ -18,7 +18,7 @@ func init() { lint.Register(pathsRule{}) }
 type pathsRule struct{}
 
 func (pathsRule) ID() string          { return "HF001" }
-func (pathsRule) Description() string { return "Путь из текста не существует" }
+func (pathsRule) Description() string { return "A path in the text does not exist" }
 
 var (
 	// Кандидат в путь: сегменты через '/', допускается ./ или ../ в начале.
@@ -65,8 +65,8 @@ func (r pathsRule) Check(doc *lint.Doc, repo *lint.Repo) []lint.Finding {
 			if !pathExists(doc, repo, tok) {
 				seen[tok] = true
 				out = append(out, lint.F(r.ID(), lint.Error, doc, n,
-					fmt.Sprintf("путь «%s» не существует", tok),
-					"исправьте путь или удалите упоминание — агент потратит время на поиск несуществующего файла"))
+					fmt.Sprintf("path \"%s\" does not exist", tok),
+					"fix the path or remove the mention: the agent will waste time looking for a file that doesn't exist"))
 			}
 		}
 	}

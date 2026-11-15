@@ -89,18 +89,18 @@ func TestLintExitCodes(t *testing.T) {
 func TestLintHumanOutput(t *testing.T) {
 	_, out, _ := run(t, "", "lint", filepath.Join(fixtures, "HF002", "bad"))
 	// Формат строки из ТЗ: CLAUDE.md:14  HF002 error  «npm run e2e» — ...
-	if !strings.Contains(out, "CLAUDE.md:5  HF002 error    «npm run e2e» — скрипта e2e нет в package.json") {
+	if !strings.Contains(out, "CLAUDE.md:5  HF002 error    \"npm run e2e\": script e2e is not in package.json") {
 		t.Fatalf("вывод:\n%s", out)
 	}
-	if !strings.Contains(out, "ошибок: 3") {
+	if !strings.Contains(out, "errors: 3") {
 		t.Fatalf("нет сводки:\n%s", out)
 	}
 	_, out, _ = run(t, "", "lint", filepath.Join(fixtures, "HF008", "good"))
-	if !strings.Contains(out, "проблем не найдено") {
+	if !strings.Contains(out, "no problems found") {
 		t.Fatal(out)
 	}
 	_, out, _ = run(t, "", "lint", t.TempDir())
-	if !strings.Contains(out, "не найдены") {
+	if !strings.Contains(out, "No instruction files") {
 		t.Fatal(out)
 	}
 	_, out, _ = run(t, "", "lint", "--list-rules")
@@ -168,7 +168,7 @@ deny-paths: secrets/**
 
 	// Подтверждаем первое эвристическое правило и отклоняем второе.
 	code, out, _ := run(t, "y\nn\n", "-C", dir, "sync")
-	if code != 0 || !strings.Contains(out, "Добавить в политику?") {
+	if code != 0 || !strings.Contains(out, "Add to the policy?") {
 		t.Fatalf("sync: %d\n%s", code, out)
 	}
 	cfg, _ = config.Load(dir)
@@ -201,7 +201,7 @@ deny-paths: secrets/**
 	}
 
 	empty := t.TempDir()
-	if _, out, _ := run(t, "", "-C", empty, "sync"); !strings.Contains(out, "не найдено") {
+	if _, out, _ := run(t, "", "-C", empty, "sync"); !strings.Contains(out, "No prohibitions to sync") {
 		t.Fatal(out)
 	}
 }
@@ -209,14 +209,14 @@ deny-paths: secrets/**
 func TestGuardInstallCheckLog(t *testing.T) {
 	dir := t.TempDir()
 	code, out, _ := run(t, "", "-C", dir, "guard", "install")
-	if code != 0 || !strings.Contains(out, "Хуки добавлены") {
+	if code != 0 || !strings.Contains(out, "Hooks added") {
 		t.Fatalf("%d %s", code, out)
 	}
-	if _, out, _ := run(t, "", "-C", dir, "guard", "install"); !strings.Contains(out, "уже установлены") {
+	if _, out, _ := run(t, "", "-C", dir, "guard", "install"); !strings.Contains(out, "already installed") {
 		t.Fatal(out)
 	}
 
-	if _, out, _ := run(t, "", "-C", dir, "guard", "log"); !strings.Contains(out, "Журнал пуст") {
+	if _, out, _ := run(t, "", "-C", dir, "guard", "log"); !strings.Contains(out, "The log is empty") {
 		t.Fatal(out)
 	}
 
@@ -233,7 +233,7 @@ func TestGuardInstallCheckLog(t *testing.T) {
 	}
 
 	_, out, _ = run(t, "", "-C", dir, "guard", "log")
-	for _, want := range []string{"deny", "rm-home", "allow", "git push", "ПРАВИЛО"} {
+	for _, want := range []string{"deny", "rm-home", "allow", "git push", "RULE"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("в журнале нет %q:\n%s", want, out)
 		}
@@ -244,7 +244,7 @@ func TestGuardInstallCheckLog(t *testing.T) {
 	if _, out, _ := run(t, string(in), "guard", "check"); !strings.Contains(out, "additionalContext") {
 		t.Fatalf("нет подсказки: %s", out)
 	}
-	if _, out, _ := run(t, "", "-C", dir, "guard", "log"); !strings.Contains(out, "подсказка: CLAUDE.md:1") {
+	if _, out, _ := run(t, "", "-C", dir, "guard", "log"); !strings.Contains(out, "hint: CLAUDE.md:1") {
 		t.Fatalf("подсказки нет в журнале:\n%s", out)
 	}
 	_, out, _ = run(t, "", "-C", dir, "guard", "log", "--decision", "allow", "--json")
@@ -277,13 +277,13 @@ func TestGuardSnapshotCommands(t *testing.T) {
 	if code, _, errOut := run(t, "", "-C", dir, "guard", "diff"); code != ExitFailure || !strings.Contains(errOut, "guard start") {
 		t.Fatalf("diff без снапшота: %d %s", code, errOut)
 	}
-	if code, out, _ := run(t, "", "-C", dir, "guard", "start"); code != 0 || !strings.Contains(out, "Снапшот") {
+	if code, out, _ := run(t, "", "-C", dir, "guard", "start"); code != 0 || !strings.Contains(out, "Snapshot") {
 		t.Fatalf("start: %d %s", code, out)
 	}
-	if _, out, _ := run(t, "", "-C", dir, "guard", "diff"); !strings.Contains(out, "Изменений") {
+	if _, out, _ := run(t, "", "-C", dir, "guard", "diff"); !strings.Contains(out, "No changes") {
 		t.Fatal(out)
 	}
-	if _, out, _ := run(t, "", "-C", dir, "guard", "rollback"); !strings.Contains(out, "откатывать нечего") {
+	if _, out, _ := run(t, "", "-C", dir, "guard", "rollback"); !strings.Contains(out, "nothing to roll back") {
 		t.Fatal(out)
 	}
 
@@ -297,14 +297,14 @@ func TestGuardSnapshotCommands(t *testing.T) {
 		t.Fatal(out)
 	}
 	// Отказ в подтверждении — ничего не меняется.
-	if _, out, _ := run(t, "n\n", "-C", dir, "guard", "rollback"); !strings.Contains(out, "Отменено") {
+	if _, out, _ := run(t, "n\n", "-C", dir, "guard", "rollback"); !strings.Contains(out, "Cancelled") {
 		t.Fatal(out)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "junk.txt")); err != nil {
 		t.Fatal("после отказа файл должен остаться")
 	}
 	code, out, _ := run(t, "y\n", "-C", dir, "guard", "rollback")
-	if code != 0 || !strings.Contains(out, "восстановлено 1, удалено 1") {
+	if code != 0 || !strings.Contains(out, "1 restored, 1 deleted") {
 		t.Fatalf("rollback: %d %s", code, out)
 	}
 	data, _ := os.ReadFile(filepath.Join(dir, "main.go"))
@@ -317,19 +317,19 @@ func TestGuardSnapshotCommands(t *testing.T) {
 	// Точки восстановления: хук checkpoint ничего не печатает, list и --to.
 	// После отката дерево совпадает с ручным снимком — новая точка появится,
 	// только если что-то изменилось.
-	os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("моя правка до запроса\n"), 0o644)
-	cp := `{"session_id":"s1","cwd":"` + dir + `","prompt":"сломай и почини"}`
+	os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("my edit before the prompt\n"), 0o644)
+	cp := `{"session_id":"s1","cwd":"` + dir + `","prompt":"break it and fix it"}`
 	if code, out, _ := run(t, cp, "guard", "checkpoint"); code != 0 || out != "" {
 		t.Fatalf("checkpoint должен молчать: %d %q", code, out)
 	}
 	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main // v2\n"), 0o644)
-	if _, out, _ := run(t, "", "-C", dir, "guard", "list"); !strings.Contains(out, "перед запросом «сломай и почини»") || !strings.Contains(out, "изменено 1") {
+	if _, out, _ := run(t, "", "-C", dir, "guard", "list"); !strings.Contains(out, "before prompt \"break it and fix it\"") || !strings.Contains(out, "1 changed") {
 		t.Fatalf("list:\n%s", out)
 	}
 	if _, out, _ := run(t, "", "-C", dir, "guard", "diff", "--to", "1", "--stat"); !strings.Contains(out, "main.go") {
 		t.Fatalf("diff --to:\n%s", out)
 	}
-	if code, out, _ := run(t, "", "-C", dir, "guard", "rollback", "--to", "1", "--yes"); code != 0 || !strings.Contains(out, "сломай и почини") {
+	if code, out, _ := run(t, "", "-C", dir, "guard", "rollback", "--to", "1", "--yes"); code != 0 || !strings.Contains(out, "break it and fix it") {
 		t.Fatalf("rollback --to: %d\n%s", code, out)
 	}
 	if code, _, errOut := run(t, "", "-C", dir, "guard", "rollback", "--to", "99"); code != ExitFailure || !strings.Contains(errOut, "guard list") {
@@ -350,12 +350,12 @@ func TestGuardListEmptyAndHumanAgo(t *testing.T) {
 	if err := c.Run(); err != nil {
 		t.Skip("git недоступен")
 	}
-	if _, out, _ := run(t, "", "-C", dir, "guard", "list"); !strings.Contains(out, "пока нет") {
+	if _, out, _ := run(t, "", "-C", dir, "guard", "list"); !strings.Contains(out, "No restore points yet") {
 		t.Fatal(out)
 	}
 	for d, want := range map[time.Duration]string{
-		10 * time.Second: "только что", 5 * time.Minute: "5 мин назад",
-		3 * time.Hour: "3 ч назад", 72 * time.Hour: "3 дн назад",
+		10 * time.Second: "just now", 5 * time.Minute: "5 min ago",
+		3 * time.Hour: "3 h ago", 72 * time.Hour: "3 days ago",
 	} {
 		if got := humanAgo(d); got != want {
 			t.Errorf("humanAgo(%v) = %q", d, got)

@@ -11,7 +11,11 @@ import (
 )
 
 // syncedMarker — комментарий над секцией, которую генерирует sync.
-const syncedMarker = "# --- holdfast sync: секция генерируется автоматически, не редактируйте ---"
+const syncedMarker = "# --- holdfast sync: this section is generated automatically, do not edit ---"
+
+// legacySyncedMarker is the same comment as written by versions up to 0.3
+// (in Russian). It is still recognized so that a re-sync cleans it up.
+const legacySyncedMarker = "# --- holdfast sync: секция генерируется автоматически, не редактируйте ---"
 
 var headerRe = regexp.MustCompile(`^\s*\[`)
 var syncedHeaderRe = regexp.MustCompile(`^\s*\[\[?\s*guard\.synced\b`)
@@ -56,7 +60,7 @@ func StripSynced(text string) string {
 	out := make([]string, 0, len(lines))
 	inSynced := false
 	for _, line := range lines {
-		if strings.TrimSpace(line) == syncedMarker {
+		if t := strings.TrimSpace(line); t == syncedMarker || t == legacySyncedMarker {
 			continue
 		}
 		if headerRe.MatchString(line) {

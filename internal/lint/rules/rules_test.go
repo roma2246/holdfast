@@ -78,9 +78,9 @@ func TestRuleDetails(t *testing.T) {
 		lines    []int
 	}{
 		{"HF001", 3, []string{"src/api/", "docs/setup.md", "missing.go"}, []int{3, 3, 9}},
-		{"HF002", 3, []string{"npm run e2e", "make deploy", "justfile не найден"}, []int{5, 6, 7}},
+		{"HF002", 3, []string{"npm run e2e", "make deploy", "justfile not found"}, []int{5, 6, 7}},
 		{"HF004", 1, []string{"use yarn"}, []int{10}},
-		{"HF005", 2, []string{"дублирует строку 5", "почти повторяет строку 5"}, []int{7, 8}},
+		{"HF005", 2, []string{"duplicates line 5", "nearly repeats line 5"}, []int{7, 8}},
 		{"HF006", 2, []string{"AWS", "AKIA*"}, []int{5, 6}},
 		{"HF007", 2, []string{"write good code", "пиши чисто"}, []int{3, 4}},
 		{"HF009", 2, []string{"migrations/", "docker compose down"}, []int{5, 6}},

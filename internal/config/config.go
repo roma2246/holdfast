@@ -110,7 +110,7 @@ func (g *GuardConfig) Normalize() error {
 		g.Mode = ModeAutonomous
 	case ModeAutonomous, ModeStrict:
 	default:
-		return fmt.Errorf("guard.mode: неизвестный режим %q (autonomous или strict)", g.Mode)
+		return fmt.Errorf("guard.mode: unknown mode %q (autonomous or strict)", g.Mode)
 	}
 	return nil
 }
@@ -164,7 +164,7 @@ func Load(root string) (*Config, error) {
 		if errors.Is(err, fs.ErrNotExist) {
 			return Default(), nil
 		}
-		return nil, fmt.Errorf("чтение %s: %w", path, err)
+		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 	if err := cfg.normalize(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -211,45 +211,45 @@ func (c *Config) IsDisabled(ruleID string) bool {
 }
 
 // Template — содержимое, которое пишет holdfast init.
-const Template = `# Конфигурация Holdfast. Документация: README.md
+const Template = `# Holdfast configuration. Documentation: README.md
 
 [lint]
-# Файлы инструкций агента, которые проверяет holdfast lint.
+# Agent instruction files that holdfast lint checks.
 files = ["CLAUDE.md", "AGENTS.md", ".cursorrules"]
-# Лимит размера файла (токены считаются как символы / 4).
+# File size limit (tokens are counted as characters / 4).
 max_tokens = 2000
-# Выключенные правила, например ["HF007"].
+# Disabled rules, for example ["HF007"].
 disable = []
 
 [guard]
-# autonomous — агент работает без остановок: необратимое запрещается
-#   с подсказкой, как сделать правильно, обратимое разрешается
-#   (откат: holdfast guard rollback);
-# strict — опасное, но обратимое требует вашего подтверждения.
+# autonomous: the agent works without stopping. Irreversible actions are denied
+#   with a hint on how to do it properly, reversible ones are allowed
+#   (rollback: holdfast guard rollback);
+# strict: dangerous but reversible actions need your confirmation.
 mode = "autonomous"
-# Ветки, push в которые агенту запрещён (в остальные — можно).
+# Branches the agent may not push to (any other branch is fine).
 protected_branches = ["main", "master"]
-# Правки в этих путях требуют вашего подтверждения (glob, ** — любая глубина).
+# Edits under these paths need your confirmation (glob, ** matches any depth).
 protected_paths = []
-# Команды, которые всегда запрещены (сверх встроенной политики).
+# Commands that are always denied (on top of the built-in policy).
 deny_commands = []
-# Команды, перед которыми агент должен спросить вас (в любом режиме).
+# Commands the agent has to ask you about first (in any mode).
 ask_commands = []
-# Сколько файлов можно удалить одной командой без точки восстановления.
-# Больше — хук сначала сам делает точку и проверяет, что удаляемое в неё попало.
+# How many files one command may delete without a restore point. Above that,
+# the hook first takes a restore point itself and verifies the files are in it.
 max_deletes = 5
-# Пересоздаваемые папки и файлы: их можно удалять массово, даже если git их
-# игнорирует (в точки восстановления они не попадают). По умолчанию —
-# node_modules, dist, build, target, __pycache__, .venv, *.pyc, *.log и т.п.
+# Regenerable directories and files: they may be deleted in bulk even if git
+# ignores them (they are not included in restore points). The defaults are
+# node_modules, dist, build, target, __pycache__, .venv, *.pyc, *.log and the like.
 # disposable_paths = ["node_modules", "dist", "build"]
-# Сколько последних точек восстановления хранить (holdfast guard list).
+# How many recent restore points to keep (holdfast guard list).
 keep_snapshots = 50
 
-# Подсказки агенту в момент, когда он трогает эти файлы.
-# Так правила не раздувают CLAUDE.md и приходят вовремя.
+# Hints for the agent at the moment it touches these files.
+# This keeps the rules out of CLAUDE.md and delivers them right on time.
 # [[guard.context]]
 # paths = ["migrations/**"]
-# note = "Существующие миграции не меняем: добавь новый файл 00N_описание.sql"
+# note = "Don't change existing migrations: add a new file 00N_description.sql"
 `
 
 // WriteTemplate создаёт holdfast.toml. Без force не перезаписывает файл.
@@ -257,7 +257,7 @@ func WriteTemplate(root string, force bool) (string, error) {
 	path := filepath.Join(root, FileName)
 	if !force {
 		if _, err := os.Stat(path); err == nil {
-			return path, fmt.Errorf("%s уже существует (используйте --force)", FileName)
+			return path, fmt.Errorf("%s already exists (use --force)", FileName)
 		}
 	}
 	return path, os.WriteFile(path, []byte(Template), 0o644)

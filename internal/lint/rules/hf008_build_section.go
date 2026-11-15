@@ -13,7 +13,7 @@ type buildSectionRule struct{}
 
 func (buildSectionRule) ID() string { return "HF008" }
 func (buildSectionRule) Description() string {
-	return "Нет секции с командами сборки и тестов"
+	return "No section with build and test commands"
 }
 
 var buildHeadingRe = regexp.MustCompile(`(?i)build|test|command|script|develop|run|сбор|тест|команд|запуск|разработ`)
@@ -35,6 +35,6 @@ func (r buildSectionRule) Check(doc *lint.Doc, _ *lint.Repo) []lint.Finding {
 		}
 	}
 	return []lint.Finding{lint.F(r.ID(), lint.Info, doc, 1,
-		"нет секции с командами сборки и тестов",
-		"добавьте «## Commands» с точными командами build / test / lint — агент будет проверять свою работу")}
+		"no section with build and test commands",
+		"add \"## Commands\" with the exact build / test / lint commands: the agent will use them to check its own work")}
 }

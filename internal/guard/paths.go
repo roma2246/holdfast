@@ -349,8 +349,8 @@ func (p *Policy) serviceVerdict(abs string) Verdict {
 		name = p.rel(abs)
 	}
 	return p.soft("holdfast-config",
-		fmt.Sprintf("%s — служебный файл Holdfast: настройки защиты или точки восстановления", name),
-		"Агент не меняет их сам. Опиши пользователю, какую правку внести, — он сделает её вручную")
+		fmt.Sprintf("%s is a Holdfast service file: protection settings or restore points", name),
+		"The agent does not change these itself. Describe the edit to the user and let them make it by hand")
 }
 
 // noteGitConfigWrite отмечает запись в файл конфигурации git: после неё

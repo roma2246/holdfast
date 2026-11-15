@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Имитирует действие агента: отправляет хуку Holdfast тот же JSON, что и
-# Claude Code (PreToolUse), и печатает ответ так, как его увидит агент.
+# Imitates an agent action: sends the Holdfast hook the same JSON as
+# Claude Code does (PreToolUse) and prints the reply the way the agent sees it.
 #
-#   agent run  "mv a b"   — проверить и, если хук не запретил, выполнить
-#   agent bash "rm -rf ~" — только проверить
+#   agent run  "mv a b"   check and, unless the hook denied it, execute
+#   agent bash "rm -rf ~" check only
 #   agent read migrations/001_init.sql
 set -euo pipefail
 
@@ -17,7 +17,7 @@ edit) tool=Edit; input=$(jq -nc --arg p "$PWD/$arg" '{file_path: $p, old_string:
 esac
 
 dim=$'\e[2m' red=$'\e[1;31m' green=$'\e[1;32m' cyan=$'\e[1;36m' reset=$'\e[0m'
-printf '%sагент → %s: %s%s\n' "$dim" "$tool" "$arg" "$reset"
+printf '%sagent → %s: %s%s\n' "$dim" "$tool" "$arg" "$reset"
 
 out=$(jq -nc --arg t "$tool" --arg cwd "$PWD" --argjson ti "$input" \
 	'{session_id: "demo", cwd: $cwd, hook_event_name: "PreToolUse", tool_name: $t, tool_input: $ti}' |
@@ -29,19 +29,19 @@ if [[ -n $out ]]; then
 fi
 case $decision in
 deny)
-	printf '%s✗ запрещено:%s %s\n\n' "$red" "$reset" "$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<<"$out")"
+	printf '%s✗ denied:%s %s\n\n' "$red" "$reset" "$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<<"$out")"
 	exit 0
 	;;
 ask)
-	printf '%s? спросить пользователя:%s %s\n\n' "$cyan" "$reset" "$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<<"$out")"
+	printf '%s? ask the user:%s %s\n\n' "$cyan" "$reset" "$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<<"$out")"
 	exit 0
 	;;
 esac
 
 if [[ -n $out ]]; then
-	printf '%s✓ разрешено + подсказка агенту:%s\n%s\n' "$green" "$reset" "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$out")"
+	printf '%s✓ allowed + a hint for the agent:%s\n%s\n' "$green" "$reset" "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$out")"
 else
-	printf '%s✓ разрешено%s\n' "$green" "$reset"
+	printf '%s✓ allowed%s\n' "$green" "$reset"
 fi
 if [[ $kind == run ]]; then
 	bash -c "$arg"

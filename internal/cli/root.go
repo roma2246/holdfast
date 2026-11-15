@@ -57,7 +57,7 @@ func Execute(version string, args []string, stdin io.Reader, stdout, stderr io.W
 	case errors.As(err, &ee): // errors.As ищет в цепочке ошибку нужного типа
 		return ee.code
 	default:
-		fmt.Fprintln(stderr, "holdfast: ошибка:", err)
+		fmt.Fprintln(stderr, "holdfast: error:", err)
 		return ExitFailure
 	}
 }
@@ -65,19 +65,19 @@ func Execute(version string, args []string, stdin io.Reader, stdout, stderr io.W
 func (a *app) rootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "holdfast",
-		Short: "Линтер инструкций и предохранитель для ИИ-агентов",
-		Long: `Holdfast делает работу ИИ-агентов (Claude Code, Cursor, Codex) в репозитории
-предсказуемой и безопасной:
+		Short: "Instruction linter and guardrails for AI coding agents",
+		Long: `Holdfast makes the work of AI agents (Claude Code, Cursor, Codex) in a
+repository predictable and safe:
 
-  holdfast lint    проверяет CLAUDE.md / AGENTS.md / .cursorrules
-  holdfast guard   контролирует, что агент делает с файлами и терминалом
-  holdfast sync    превращает запреты из CLAUDE.md в политики guard
-  holdfast doctor  проверяет, что хуки подключены и точки восстановления создаются`,
+  holdfast lint    checks CLAUDE.md / AGENTS.md / .cursorrules
+  holdfast guard   controls what the agent does with files and the terminal
+  holdfast sync    turns the prohibitions in CLAUDE.md into guard policies
+  holdfast doctor  checks that the hooks are connected and restore points are created`,
 		Version:       a.version,
 		SilenceUsage:  true, // не печатать справку при каждой ошибке
 		SilenceErrors: true, // ошибки печатаем сами в Execute
 	}
-	root.PersistentFlags().StringVarP(&a.dir, "dir", "C", ".", "папка репозитория")
+	root.PersistentFlags().StringVarP(&a.dir, "dir", "C", ".", "repository directory")
 	root.AddCommand(a.lintCmd(), a.initCmd(), a.syncCmd(), a.guardCmd(), a.doctorCmd())
 	return root
 }

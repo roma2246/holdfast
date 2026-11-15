@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Готовит демо-проект во временной папке и вспомогательные команды для
-# сценария. Вызывается из docs/demo.tape через `source`.
+# Prepares a demo project in a temp directory and the helper commands for
+# the script. Sourced from docs/demo.tape.
 demo=$(mktemp -d)/shop
 mkdir -p "$demo/lib" "$demo/assets" "$demo/migrations"
 cd "$demo" || return
@@ -8,22 +8,22 @@ cd "$demo" || return
 cat >CLAUDE.md <<'EOF'
 # Shop API
 
-Код API лежит в `src/server/`.
+The API code lives in `src/server/`.
 
 ## Commands
 
-- Запуск: `./start.sh`
-- Деплой: `make deploy`
+- Run: `./start.sh`
+- Deploy: `make deploy`
 
 ## Rules
 
-- Never edit `migrations/` — они уже применены в продакшене.
+- Never edit `migrations/`: they are already applied in production.
 - Deploy token: ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789
 EOF
 cat >start.sh <<'EOF'
 #!/usr/bin/env bash
 source lib/config.sh && source lib/cart.sh &&
-	echo "✓ shop запущен на порту $PORT" || { echo "✗ shop не запустился"; exit 1; }
+	echo "✓ shop is running on port $PORT" || { echo "✗ shop failed to start"; exit 1; }
 EOF
 chmod +x start.sh
 echo 'PORT=8080' >lib/config.sh
@@ -38,30 +38,29 @@ git add -A
 git -c user.name=demo -c user.email=demo@example.com commit -qm init
 export PS1='\[\e[1;34m\]shop\[\e[0m\] $ '
 
-# VHS неправильно «набирает» кириллицу, поэтому русский текст в сценарии не
-# печатается вручную: подписи и запрос пользователя выводят эти функции,
-# которые заодно стирают строку со своей командой.
+# The captions and the user's prompt are not typed in the tape: these
+# functions print them and also erase the line with their own command.
 
-# step N — подпись к сцене.
+# step N prints the caption of a scene.
 step() {
 	local msg
 	case $1 in
-	1) msg="1. Подключаем Holdfast один раз. Проект работает" ;;
-	2) msg="2. Просим агента. Holdfast сам сохраняет точку восстановления" ;;
-	3) msg="3. Агент закончил, а запуск сломан" ;;
-	4) msg="4. Смотрим, что изменилось, и возвращаем как было" ;;
-	5) msg="5. А ещё: проверка инструкций агента" ;;
+	1) msg="1. Connect Holdfast once. The project works" ;;
+	2) msg="2. Ask the agent. Holdfast saves a restore point on its own" ;;
+	3) msg="3. The agent is done, and the app no longer starts" ;;
+	4) msg="4. See what changed and put everything back" ;;
+	5) msg="5. Also: a check of the agent's instructions" ;;
 	esac
 	printf '\e[1A\e[2K\e[1;35m# %s\e[0m\n' "$msg"
 }
 
-# ask — запрос пользователя к агенту. Отправляет хуку UserPromptSubmit тот же
-# JSON, что и Claude Code, поэтому точка восстановления создаётся по-настоящему.
+# ask is the user's prompt to the agent. It sends the UserPromptSubmit hook the
+# same JSON as Claude Code does, so the restore point is created for real.
 ask() {
-	local prompt="Переименуй cart в basket и убери лишнее"
+	local prompt="Rename cart to basket and remove what we don't need"
 	jq -nc --arg cwd "$PWD" --arg p "$prompt" \
 		'{session_id: "demo", cwd: $cwd, hook_event_name: "UserPromptSubmit", prompt: $p}' |
 		CLAUDE_PROJECT_DIR=$PWD holdfast guard checkpoint
-	printf '\e[1A\e[2K\e[1mвы → агенту:\e[0m «%s»\n' "$prompt"
-	printf '\e[2mholdfast: точка восстановления сохранена\e[0m\n\n'
+	printf '\e[1A\e[2K\e[1myou → agent:\e[0m "%s"\n' "$prompt"
+	printf '\e[2mholdfast: restore point saved\e[0m\n\n'
 }

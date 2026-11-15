@@ -89,7 +89,7 @@ func readSettings(path string) (map[string]any, error) {
 	case err == nil:
 		if len(bytes.TrimSpace(data)) > 0 {
 			if err := json.Unmarshal(data, &settings); err != nil {
-				return nil, fmt.Errorf("%s: некорректный JSON: %w", path, err)
+				return nil, fmt.Errorf("%s: invalid JSON: %w", path, err)
 			}
 		}
 	case !errors.Is(err, fs.ErrNotExist):

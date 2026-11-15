@@ -15,7 +15,7 @@ type commandsRule struct{}
 
 func (commandsRule) ID() string { return "HF002" }
 func (commandsRule) Description() string {
-	return "Команда npm run / make / just отсутствует в package.json / Makefile / justfile"
+	return "An npm run / make / just command is missing from package.json / Makefile / justfile"
 }
 
 // Ищем только в `коде` и в блоках ```...```: в обычном тексте
@@ -61,19 +61,19 @@ func stripShellComment(s string) string {
 func (r commandsRule) check(doc *lint.Doc, repo *lint.Repo, line int, tool, name string) (lint.Finding, bool) {
 	kind := lint.KindNPM
 	fileName := "package.json"
-	what := "скрипта"
+	what := "script"
 	switch tool {
 	case "make":
-		kind, fileName, what = lint.KindMake, "Makefile", "цели"
+		kind, fileName, what = lint.KindMake, "Makefile", "target"
 	case "just":
-		kind, fileName, what = lint.KindJust, "justfile", "рецепта"
+		kind, fileName, what = lint.KindJust, "justfile", "recipe"
 	}
 	cmd := tool + " " + name
 	names, path, found := repo.Names(kind, doc.Dir)
 	if !found {
 		return lint.F(r.ID(), lint.Error, doc, line,
-			fmt.Sprintf("«%s» — %s не найден", cmd, fileName),
-			fmt.Sprintf("создайте %s или уберите команду из инструкций", fileName)), true
+			fmt.Sprintf("\"%s\": %s not found", cmd, fileName),
+			fmt.Sprintf("create %s or remove the command from the instructions", fileName)), true
 	}
 	if names[name] {
 		return lint.Finding{}, false
@@ -83,6 +83,6 @@ func (r commandsRule) check(doc *lint.Doc, repo *lint.Repo, line int, tool, name
 		rel = path
 	}
 	return lint.F(r.ID(), lint.Error, doc, line,
-		fmt.Sprintf("«%s» — %s %s нет в %s", cmd, what, name, filepath.ToSlash(rel)),
-		"агент запустит несуществующую команду; обновите инструкцию"), true
+		fmt.Sprintf("\"%s\": %s %s is not in %s", cmd, what, name, filepath.ToSlash(rel)),
+		"the agent will run a command that doesn't exist; update the instructions"), true
 }

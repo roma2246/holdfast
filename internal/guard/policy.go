@@ -122,7 +122,7 @@ const (
 // подсказать агенту, как сделать правильно, чтобы он исправился сам.
 func (p *Policy) soft(rule, reason, hint string) Verdict {
 	if p.cfg.Strict() {
-		return Verdict{Ask, rule, reason + " — нужно подтверждение пользователя"}
+		return Verdict{Ask, rule, reason + "; user confirmation required"}
 	}
 	return Verdict{Deny, rule, reason + ". " + hint}
 }
@@ -202,7 +202,7 @@ func (p *Policy) checkSensitive(abs string) Verdict {
 		return allowVerdict
 	}
 	return Verdict{Deny, "secret-file", fmt.Sprintf(
-		"доступ к файлу с секретами (%s) запрещён. Имена переменных смотри в .env.example или в коде (os.Getenv / process.env); значения не нужны — используй переменные окружения", filepath.Base(abs))}
+		"access to the secrets file (%s) is not allowed. Look up variable names in .env.example or in the code (os.Getenv / process.env); you don't need the values, use environment variables", filepath.Base(abs))}
 }
 
 // isTempPath — путь внутри временной папки (но не она сама). Агенты часто
@@ -240,17 +240,17 @@ func (p *Policy) pathRules(abs string) Verdict {
 	for _, r := range p.cfg.Synced.Rules {
 		if r.Kind == config.KindDenyPath && p.match(r.Pattern, rel) {
 			return Verdict{Deny, "synced-deny-path", fmt.Sprintf(
-				"правка %s запрещена правилом из %s (%s). Не меняй эти файлы; если правка необходима — опиши её пользователю", rel, r.Source, r.Pattern)}
+				"editing %s is forbidden by a rule from %s (%s). Don't change these files; if the edit is necessary, describe it to the user", rel, r.Source, r.Pattern)}
 		}
 	}
 	for _, r := range p.cfg.Synced.Rules {
 		if r.Kind == config.KindAskPath && p.match(r.Pattern, rel) {
-			return Verdict{Ask, "synced-ask-path", fmt.Sprintf("правка %s требует подтверждения (правило %s из %s)", rel, r.Pattern, r.Source)}
+			return Verdict{Ask, "synced-ask-path", fmt.Sprintf("editing %s needs confirmation (rule %s from %s)", rel, r.Pattern, r.Source)}
 		}
 	}
 	for _, pat := range p.cfg.ProtectedPaths {
 		if p.match(pat, rel) {
-			return Verdict{Ask, "protected-path", fmt.Sprintf("%s в защищённой папке (%s): нужно подтверждение пользователя", rel, pat)}
+			return Verdict{Ask, "protected-path", fmt.Sprintf("%s is in a protected path (%s): user confirmation required", rel, pat)}
 		}
 	}
 	return allowVerdict

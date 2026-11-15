@@ -14,7 +14,7 @@ type duplicatesRule struct{}
 
 func (duplicatesRule) ID() string { return "HF005" }
 func (duplicatesRule) Description() string {
-	return "Дублирующиеся или почти одинаковые пункты"
+	return "Duplicate or near-identical items"
 }
 
 // Порог похожести из ТЗ: > 90%.
@@ -83,12 +83,12 @@ func (r duplicatesRule) Check(doc *lint.Doc, _ *lint.Repo) []lint.Finding {
 				continue
 			}
 			dup[items[j].line] = true
-			msg := fmt.Sprintf("дублирует строку %d", items[i].line)
+			msg := fmt.Sprintf("duplicates line %d", items[i].line)
 			if sim < 1 {
-				msg = fmt.Sprintf("почти повторяет строку %d (похожесть %.0f%%)", items[i].line, sim*100)
+				msg = fmt.Sprintf("nearly repeats line %d (similarity %.0f%%)", items[i].line, sim*100)
 			}
 			out = append(out, lint.F(r.ID(), lint.Warning, doc, items[j].line, msg,
-				"удалите повтор — он тратит контекст и не добавляет смысла"))
+				"remove the repeat: it wastes context and adds nothing"))
 		}
 	}
 	return out

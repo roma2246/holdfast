@@ -71,7 +71,7 @@ func Register(r Rule) {
 	defer registryMu.Unlock() // defer выполнится при выходе из функции
 	id := r.ID()
 	if _, dup := registry[id]; dup {
-		panic(fmt.Sprintf("lint: правило %s зарегистрировано дважды", id))
+		panic(fmt.Sprintf("lint: rule %s registered twice", id))
 	}
 	registry[id] = r
 }

@@ -14,7 +14,7 @@ type secretsRule struct{}
 
 func (secretsRule) ID() string { return "HF006" }
 func (secretsRule) Description() string {
-	return "Похоже на секрет: API-ключ, токен, пароль"
+	return "Looks like a secret: API key, token, password"
 }
 
 type secretPattern struct {
@@ -25,7 +25,7 @@ type secretPattern struct {
 }
 
 var secretPatterns = []secretPattern{
-	{"приватный ключ", regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----`), 0},
+	{"private key", regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----`), 0},
 	{"AWS access key", regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`), 0},
 	{"GitHub token", regexp.MustCompile(`\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,})\b`), 0},
 	{"Anthropic/OpenAI key", regexp.MustCompile(`\bsk-(?:ant-|proj-)?[A-Za-z0-9_\-]{20,}`), 0},
@@ -34,7 +34,7 @@ var secretPatterns = []secretPattern{
 	{"Stripe key", regexp.MustCompile(`\b[sr]k_live_[0-9A-Za-z]{20,}\b`), 0},
 	{"JWT", regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`), 0},
 	// password = "..." / API_KEY: ... / пароль: ...
-	{"пароль или ключ", regexp.MustCompile(`(?i)\b(?:api[_-]?key|secret(?:[_-]?key)?|access[_-]?token|auth[_-]?token|token|password|passwd|pwd|пароль)\b["']?\s*[:=]\s*["']?([^\s"'` + "`" + `,;]{8,})`), 1},
+	{"password or key", regexp.MustCompile(`(?i)\b(?:api[_-]?key|secret(?:[_-]?key)?|access[_-]?token|auth[_-]?token|token|password|passwd|pwd|пароль)\b["']?\s*[:=]\s*["']?([^\s"'` + "`" + `,;]{8,})`), 1},
 }
 
 // Значения-заглушки, которые не считаем секретами.
@@ -53,8 +53,8 @@ func (r secretsRule) Check(doc *lint.Doc, _ *lint.Repo) []lint.Finding {
 				continue
 			}
 			out = append(out, lint.F(r.ID(), lint.Error, doc, i+1,
-				fmt.Sprintf("похоже на секрет (%s): %s", p.name, maskSecret(value)),
-				"удалите секрет из файла и перевыпустите его; агенту давайте имя переменной окружения, а не значение"))
+				fmt.Sprintf("looks like a secret (%s): %s", p.name, maskSecret(value)),
+				"remove the secret from the file and rotate it; give the agent the name of an environment variable, not the value"))
 			break // одной находки на строку достаточно
 		}
 	}
