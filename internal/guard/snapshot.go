@@ -462,9 +462,9 @@ type DiffOptions struct {
 }
 
 // Diff prints the working-tree changes since the snapshot: exactly what a
-// rollback to it would undo.
-func (g *Git) Diff(w io.Writer, snap Snapshot, opt DiffOptions) error {
-	plan, err := g.PlanRollback(snap)
+// rollback to it would undo. If paths are given, only matching changes are shown.
+func (g *Git) Diff(w io.Writer, snap Snapshot, opt DiffOptions, paths ...string) error {
+	plan, err := g.PlanRollback(snap, paths...)
 	if err != nil {
 		return err
 	}
@@ -481,6 +481,10 @@ func (g *Git) Diff(w io.Writer, snap Snapshot, opt DiffOptions) error {
 		args = append(args, "--name-status")
 	}
 	args = append(args, snap.Commit+"^{tree}", plan.Tree)
+	if len(paths) > 0 {
+		args = append(args, "--")
+		args = append(args, paths...)
+	}
 	out, err := g.run(nil, nil, args...)
 	if err != nil {
 		return err
@@ -498,9 +502,74 @@ type Changes struct {
 // Empty reports that there are no changes.
 func (c Changes) Empty() bool { return len(c.Added)+len(c.Modified) == 0 }
 
+// Filter returns a new Changes struct containing only paths that match at least one of patterns.
+// If patterns is empty, it returns c unchanged.
+func (c Changes) Filter(patterns ...string) Changes {
+	if len(patterns) == 0 {
+		return c
+	}
+	var filtered Changes
+	for _, f := range c.Added {
+		if MatchesAny(patterns, f) {
+			filtered.Added = append(filtered.Added, f)
+		}
+	}
+	for _, f := range c.Modified {
+		if MatchesAny(patterns, f) {
+			filtered.Modified = append(filtered.Modified, f)
+		}
+	}
+	return filtered
+}
+
+// MatchesPath reports whether target (a slash-separated path relative to repo root)
+// matches pattern. It supports exact path matches, directory prefixes, and glob wildcards (*, **, ?).
+func MatchesPath(pattern, target string) bool {
+	pattern = strings.ReplaceAll(strings.TrimSpace(pattern), "\\", "/")
+	target = strings.ReplaceAll(strings.TrimSpace(target), "\\", "/")
+
+	pattern = strings.TrimPrefix(pattern, "./")
+	target = strings.TrimPrefix(target, "./")
+
+	if pattern == "" || pattern == "." {
+		return true
+	}
+	patternClean := strings.TrimSuffix(pattern, "/")
+	if target == patternClean || strings.HasPrefix(target, patternClean+"/") {
+		return true
+	}
+	if strings.ContainsAny(pattern, "*?[") {
+		reStr := GlobToRegexp(patternClean)
+		if re, err := regexp.Compile(reStr); err == nil {
+			if re.MatchString(target) {
+				return true
+			}
+			if !strings.Contains(patternClean, "/") && re.MatchString(filepath.Base(target)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// MatchesAny reports whether target matches any of the patterns.
+// If patterns is empty, it returns true (matches everything).
+func MatchesAny(patterns []string, target string) bool {
+	if len(patterns) == 0 {
+		return true
+	}
+	for _, p := range patterns {
+		if MatchesPath(p, target) {
+			return true
+		}
+	}
+	return false
+}
+
 // ChangesSince works out what has changed since the snapshot (what a rollback would undo).
-func (g *Git) ChangesSince(snap Snapshot) (Changes, error) {
-	plan, err := g.PlanRollback(snap)
+// If paths are provided, only matching changes are returned.
+func (g *Git) ChangesSince(snap Snapshot, paths ...string) (Changes, error) {
+	plan, err := g.PlanRollback(snap, paths...)
 	return plan.Changes, err
 }
 
@@ -558,7 +627,7 @@ type RollbackPlan struct {
 // added to .gitignore after the restore point: then it is in the restore
 // point, the rollback will overwrite it, and a regular snapshot would not
 // hold its current version. Such paths are force-added to the backup (git add -f).
-func (g *Git) PlanRollback(snap Snapshot) (RollbackPlan, error) {
+func (g *Git) PlanRollback(snap Snapshot, paths ...string) (RollbackPlan, error) {
 	plan := RollbackPlan{Snapshot: snap}
 	if wt := snap.Meta.Worktree; wt != "" && !samePath(wt, g.Dir) {
 		return plan, fmt.Errorf("snapshot %s was taken in another working tree (%s); rollback cancelled", snap.Name(), wt)
@@ -604,6 +673,9 @@ func (g *Git) PlanRollback(snap Snapshot) (RollbackPlan, error) {
 	}
 	if plan.Changes, err = g.changesBetween(snapTree, plan.Tree); err != nil {
 		return plan, err
+	}
+	if len(paths) > 0 {
+		plan.Changes = plan.Changes.Filter(paths...)
 	}
 	return plan, g.guardNestedRepos(snapTree, &plan)
 }
@@ -731,8 +803,9 @@ func samePath(a, b string) bool {
 // appeared after it and restores the changed and deleted ones. Before that the
 // current state (including everything that will be overwritten) is saved under
 // refs/holdfast-backup/, so the rollback can be undone by rolling back to that backup.
-func (g *Git) Rollback(snap Snapshot, now time.Time) (Changes, Snapshot, error) {
-	plan, err := g.PlanRollback(snap)
+// If paths are provided, only matching files and directories are rolled back.
+func (g *Git) Rollback(snap Snapshot, now time.Time, paths ...string) (Changes, Snapshot, error) {
+	plan, err := g.PlanRollback(snap, paths...)
 	if err != nil {
 		return Changes{}, Snapshot{}, err
 	}

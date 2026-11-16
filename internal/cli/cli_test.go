@@ -343,6 +343,81 @@ func TestGuardSnapshotCommands(t *testing.T) {
 	}
 }
 
+func TestGuardSelectiveRollback(t *testing.T) {
+	dir := t.TempDir()
+	gitCmd := func(args ...string) {
+		t.Helper()
+		c := exec.Command("git", args...)
+		c.Dir = dir
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	gitCmd("init", "-q")
+	os.WriteFile(filepath.Join(dir, "f1.txt"), []byte("f1-v1\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "f2.txt"), []byte("f2-v1\n"), 0o644)
+	gitCmd("add", "-A")
+	gitCmd("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
+
+	if code, out, _ := run(t, "", "-C", dir, "guard", "start"); code != 0 || !strings.Contains(out, "Snapshot") {
+		t.Fatalf("start: %d %s", code, out)
+	}
+
+	// Make changes
+	os.WriteFile(filepath.Join(dir, "f1.txt"), []byte("f1-v2\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "f2.txt"), []byte("f2-v2\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "new.txt"), []byte("new-file\n"), 0o644)
+
+	// diff with path filter shows only f1.txt
+	if _, out, _ := run(t, "", "-C", dir, "guard", "diff", "f1.txt"); !strings.Contains(out, "f1.txt") || strings.Contains(out, "f2.txt") {
+		t.Fatalf("diff f1.txt: %s", out)
+	}
+
+	// diff with unmatched path shows "No changes matching"
+	if _, out, _ := run(t, "", "-C", dir, "guard", "diff", "nonexistent.txt"); !strings.Contains(out, "No changes matching the specified path") {
+		t.Fatalf("diff nonexistent: %s", out)
+	}
+
+	// rollback with unmatched path shows "No changes matching"
+	if _, out, _ := run(t, "", "-C", dir, "guard", "rollback", "nonexistent.txt"); !strings.Contains(out, "No changes matching the specified path") {
+		t.Fatalf("rollback nonexistent: %s", out)
+	}
+
+	// selective rollback of f1.txt via positional arg
+	code, out, _ := run(t, "", "-C", dir, "guard", "rollback", "--yes", "f1.txt")
+	if code != 0 || !strings.Contains(out, "1 restored, 0 deleted") {
+		t.Fatalf("rollback f1.txt: %d %s", code, out)
+	}
+
+	// f1.txt must be restored
+	f1Data, _ := os.ReadFile(filepath.Join(dir, "f1.txt"))
+	if string(f1Data) != "f1-v1\n" {
+		t.Fatalf("f1.txt not restored: %q", f1Data)
+	}
+	// f2.txt and new.txt must remain modified/added!
+	f2Data, _ := os.ReadFile(filepath.Join(dir, "f2.txt"))
+	if string(f2Data) != "f2-v2\n" {
+		t.Fatalf("f2.txt changed unexpectedly: %q", f2Data)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "new.txt")); err != nil {
+		t.Fatalf("new.txt missing: %v", err)
+	}
+
+	// selective rollback of new.txt via --path flag
+	code, out, _ = run(t, "", "-C", dir, "guard", "rollback", "--yes", "-p", "new.txt")
+	if code != 0 || !strings.Contains(out, "0 restored, 1 deleted") {
+		t.Fatalf("rollback new.txt: %d %s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "new.txt")); !os.IsNotExist(err) {
+		t.Fatalf("new.txt should be deleted")
+	}
+	// f2.txt is still modified
+	f2Data, _ = os.ReadFile(filepath.Join(dir, "f2.txt"))
+	if string(f2Data) != "f2-v2\n" {
+		t.Fatalf("f2.txt changed unexpectedly: %q", f2Data)
+	}
+}
+
 func TestGuardListEmptyAndHumanAgo(t *testing.T) {
 	dir := t.TempDir()
 	c := exec.Command("git", "init", "-q")
