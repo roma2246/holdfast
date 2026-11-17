@@ -35,6 +35,10 @@ A Go CLI: `holdfast lint` checks agent instruction files,
 - The hook must not crash and must answer in under 10 ms: check `TestHookLatency`.
 - Comments in English; keep short explanations for non-obvious Go constructs. CLI output and hook messages are in English too; Russian stays only in `README.ru.md` and in recognizing Russian phrases in users' instruction files.
 - Coverage stays at 80% or higher.
+- Release versions go strictly in sequence, one step at a time: the next tag is always the
+  latest tag (`git tag --sort=-v:refname | head -1`) plus one patch: v0.4.1, v0.4.2, … v0.4.9,
+  then v0.5.0 (after x.y.9 the minor goes up and the patch resets to 0). No skipping, no picking a number by hand.
+  The version comes only from the git tag (goreleaser sets `main.version`).
 - Guarantees (lossless rollback, worktree isolation, reversible deletion) are checked by property tests in `guarantees_test.go`; a new guarantee means a new property there.
 - The README promises no more than the tests verify: what the hook does not catch is listed in the "Limitations" section.
 
