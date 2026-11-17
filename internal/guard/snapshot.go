@@ -227,11 +227,27 @@ func (g *Git) writeTreeFresh() (string, error) {
 	return tree, err
 }
 
+// cachedIndexStep is a test seam: when set, it is called after each git step
+// of writeTreeCached, so a test can interleave another process at that point.
+var cachedIndexStep func(step string)
+
 // writeTreeCached gives the same result but keeps the service index in
 // .git/holdfast/index between runs. In the index git remembers the size and
 // modification time of every file, so it re-reads only the changed ones, which
-// is several times faster on large projects. `read-tree -m HEAD` resets the
-// index to the state of HEAD while keeping those stamps for untouched files.
+// is several times faster on large projects. `read-tree --reset HEAD` resets
+// the index to the state of HEAD while keeping those stamps for untouched
+// files. Not `-m`: it refuses with "not uptodate" once a file that is already
+// in the index (from the previous snapshot) is edited again, which silently
+// sent every such snapshot down the slow path.
+//
+// The shared index is only a seed. Every run works on its own private copy
+// and then atomically renames the copy back. Git locks the index per command,
+// not for the whole read-tree → add → write-tree sequence, so two runs on one
+// shared file could interleave: one run's read-tree reset the index between
+// the other run's add and write-tree, and that snapshot silently got the HEAD
+// version of edited files. Private copies need no lock, so there is no lock to
+// wait for or to leave behind after a crash; the last run to finish simply
+// leaves its (equally valid) index as the next seed.
 func (g *Git) writeTreeCached() (string, error) {
 	gd := gitDir(g.Dir)
 	if _, ok := g.head(); gd == "" || !ok {
@@ -241,14 +257,63 @@ func (g *Git) writeTreeCached() (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	env := []string{"GIT_INDEX_FILE=" + filepath.Join(dir, "index")}
-	for _, args := range [][]string{{"read-tree", "-m", "HEAD"}, {"add", "-A", "--", "."}} {
+	shared := filepath.Join(dir, "index")
+	// The private copy sits next to the shared index, so the final rename
+	// stays on one file system and is atomic.
+	f, err := os.CreateTemp(dir, "index-*.tmp")
+	if err != nil {
+		return "", err
+	}
+	private := f.Name()
+	defer os.Remove(private) // a no-op after a successful rename
+	if err := seedIndex(f, shared); err != nil {
+		return "", err
+	}
+	env := []string{"GIT_INDEX_FILE=" + private}
+	for _, args := range [][]string{{"read-tree", "--reset", "HEAD"}, {"add", "-A", "--", "."}} {
 		if _, err := g.run(env, nil, args...); err != nil {
 			return "", err
 		}
+		if cachedIndexStep != nil {
+			cachedIndexStep(args[0])
+		}
 	}
 	out, err := g.run(env, nil, "write-tree")
-	return strings.TrimSpace(out), err
+	if err != nil {
+		return "", err
+	}
+	// Publishing the cache is best effort: the tree is already correct, and a
+	// failed rename (e.g. the file is busy on Windows) only costs speed next time.
+	_ = os.Rename(private, shared)
+	return strings.TrimSpace(out), nil
+}
+
+// seedIndex fills the freshly created private index f with a copy of the
+// shared one. Without a shared index yet, f is removed, because git accepts
+// either a valid index or a missing file. The copy keeps the original's
+// modification time, which git compares with the file stamps to spot racily
+// clean entries.
+func seedIndex(f *os.File, shared string) error {
+	defer f.Close()
+	src, err := os.Open(shared)
+	if errors.Is(err, os.ErrNotExist) {
+		f.Close()
+		return os.Remove(f.Name())
+	}
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	if _, err := io.Copy(f, src); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if fi, err := src.Stat(); err == nil {
+		_ = os.Chtimes(f.Name(), fi.ModTime(), fi.ModTime())
+	}
+	return nil
 }
 
 // CreateSnapshot saves the current working tree as a snapshot.

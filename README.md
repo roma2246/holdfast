@@ -286,6 +286,8 @@ Holdfast honestly does what is described above, but no more:
   `.gitignore`, the contents of nested git repositories and submodules, permissions (other
   than the executable bit) or empty folders. Anything outside the project folder (databases,
   external services, other repositories) will not be brought back by a rollback.
+- **A restore point is not a freeze.** A file another program writes while the snapshot is
+  being taken may land in it in either version. Stop the agent before rolling back.
 - **Path denials see commands, not the file system.** Globs, `{a,b}`, symbolic links and
   `cp file folder/` are expanded, but writing through a hard link created earlier, and edits
   made by git commands (`git checkout -- file`, `git restore`, `git stash`), are not checked

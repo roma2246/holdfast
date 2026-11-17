@@ -305,6 +305,9 @@ func TestWriteTreeCachedMatchesFresh(t *testing.T) {
 	write(t, dir, "new/untracked.txt", "new\n")
 	write(t, dir, "debug.log", "ignored\n")
 	same("an edit, a new file, an ignored file")
+	write(t, dir, "a.txt", "changed again\n")
+	write(t, dir, "new/untracked.txt", "new, edited\n")
+	same("editing files that are already in the service index")
 	os.Remove(filepath.Join(dir, "b.txt"))
 	same("deleting a tracked file")
 	// The file was in earlier snapshots and then got into .gitignore.
@@ -327,5 +330,42 @@ func TestWriteTreeCachedMatchesFresh(t *testing.T) {
 	}
 	if _, err := ge.WriteTree(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A deterministic replay of the shared-index race (roadmap A3): another
+// snapshot process runs `read-tree -m HEAD` on .git/holdfast/index between our
+// `add` and `write-tree`. The snapshot must still hold the file as it is on
+// disk, not the HEAD version the other process put back into the index.
+func TestWriteTreeCachedInterleaved(t *testing.T) {
+	dir := gitRepo(t, true)
+	g, err := OpenGit(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "a.txt", "edited by the agent\n")
+	if _, err := g.writeTreeCached(); err != nil { // warm the shared index
+		t.Fatal(err)
+	}
+	shared := filepath.Join(gitDir(dir), "holdfast", "index")
+	cachedIndexStep = func(step string) {
+		if step != "add" {
+			return
+		}
+		cmd := exec.Command("git", "read-tree", "--reset", "HEAD")
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_INDEX_FILE="+shared)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("the interleaved read-tree: %v\n%s", err, out)
+		}
+	}
+	defer func() { cachedIndexStep = nil }()
+
+	tree, err := g.writeTreeCached()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := git(t, dir, "cat-file", "-p", tree+":a.txt"); got != "edited by the agent\n" {
+		t.Fatalf("the snapshot holds %q instead of the file on disk", got)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +20,8 @@ import (
 //
 //   - everything a rollback overwrote or deleted is saved in the backup,
 //     or else the rollback does not start;
+//   - every successful snapshot holds the files as they are on disk, even
+//     when several snapshot processes run at once;
 //   - a snapshot of another working tree is never picked;
 //   - mass deletion is allowed only if what is deleted is in the restore point;
 //   - a failed restore point does not look like a successful one;
@@ -261,6 +264,73 @@ func TestWorktreesAreIsolated(t *testing.T) {
 	otherSnaps, _ := gOther.Snapshots()
 	if len(mainSnaps) != 1 || len(otherSnaps) != 1 {
 		t.Fatalf("after pruning: main=%d other=%d", len(mainSnaps), len(otherSnaps))
+	}
+}
+
+// Parallel snapshots and checkpoints (with pruning) on one repository: each
+// one either fails visibly or holds exactly what is on disk (roadmap B1).
+// The files differ from HEAD, so a snapshot built from an index that another
+// run reset to HEAD would show up here.
+func TestParallelSnapshotsMatchDisk(t *testing.T) {
+	dir := gitRepo(t, true)
+	write(t, dir, "a.txt", "agent edit a\n")
+	write(t, dir, "b.txt", "agent edit b\n")
+	write(t, dir, "new/c.txt", "untracked c\n")
+	want := diskState(t, dir)
+	g, err := OpenGit(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const workers, rounds = 8, 5
+	var (
+		mu    sync.Mutex
+		snaps []Snapshot
+		errs  []error
+		wg    sync.WaitGroup
+	)
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for r := 0; r < rounds; r++ {
+				var s Snapshot
+				var err error
+				if (w+r)%2 == 0 {
+					s, err = g.CreateSnapshot(time.Now(), SnapshotMeta{})
+				} else {
+					s, _, err = g.Checkpoint(time.Now(), SnapshotMeta{Kind: KindCheckpoint}, 3)
+				}
+				mu.Lock()
+				if err != nil {
+					errs = append(errs, err)
+				} else {
+					snaps = append(snaps, s)
+				}
+				mu.Unlock()
+			}
+		}(w)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		t.Errorf("a parallel snapshot failed: %v", err)
+	}
+	for _, s := range snaps {
+		files, err := g.TreeFiles(s.Tree, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, content := range want {
+			if !files[name] {
+				t.Errorf("snapshot %s lacks %s", s.Name(), name)
+				continue
+			}
+			if got := git(t, dir, "cat-file", "-p", s.Tree+":"+name); got != content {
+				t.Errorf("snapshot %s holds %q for %s, the disk has %q", s.Name(), got, name, content)
+			}
+		}
+	}
+	if diskState(t, dir)["a.txt"] != want["a.txt"] {
+		t.Fatal("snapshots changed the working tree")
 	}
 }
 
