@@ -25,6 +25,7 @@ import (
 //     when several snapshot processes run at once;
 //   - a rollback interrupted at any point is reported to the next process,
 //     and both finishing it and undoing it give a consistent state;
+//   - a selective rollback touches only the requested files, leaving all other files unchanged;
 //   - a snapshot of another working tree is never picked;
 //   - mass deletion is allowed only if what is deleted is in the restore point;
 //   - a failed restore point does not look like a successful one;
@@ -170,6 +171,85 @@ func TestRollbackNeverLosesData(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A selective rollback touches only the requested paths and leaves everything else untouched.
+func TestSelectiveRollbackPreservesUnselectedFiles(t *testing.T) {
+	dir := gitRepo(t, true)
+	write(t, dir, "selected_mod.txt", "v1-selected-mod\n")
+	write(t, dir, "unselected_mod.txt", "v1-unselected-mod\n")
+	write(t, dir, "selected_del.txt", "v1-selected-del\n")
+	write(t, dir, "unselected_del.txt", "v1-unselected-del\n")
+	write(t, dir, "keep_alone.txt", "v1-keep-alone\n")
+	write(t, dir, "sub/nested.txt", "v1-nested\n")
+	g, err := OpenGit(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := g.CreateSnapshot(time.Now(), SnapshotMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Agent modifications:
+	write(t, dir, "selected_mod.txt", "v2-selected-mod-agent\n")
+	write(t, dir, "unselected_mod.txt", "v2-unselected-mod-agent\n")
+	os.Remove(filepath.Join(dir, "selected_del.txt"))
+	os.Remove(filepath.Join(dir, "unselected_del.txt"))
+	write(t, dir, "selected_add.txt", "v2-selected-add-agent\n")
+	write(t, dir, "unselected_add.txt", "v2-unselected-add-agent\n")
+
+	beforeRollback := diskState(t, dir)
+
+	// Selectively rollback only selected_mod.txt, selected_del.txt, and selected_add.txt
+	_, backup, err := g.Rollback(snap, time.Now(), "selected_mod.txt", "selected_del.txt", "selected_add.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterRollback := diskState(t, dir)
+
+	// Property 1: The selected files were rolled back.
+	if afterRollback["selected_mod.txt"] != "v1-selected-mod\n" {
+		t.Errorf("selected_mod.txt not restored: %q", afterRollback["selected_mod.txt"])
+	}
+	if afterRollback["selected_del.txt"] != "v1-selected-del\n" {
+		t.Errorf("selected_del.txt not restored: %q", afterRollback["selected_del.txt"])
+	}
+	if _, ok := afterRollback["selected_add.txt"]; ok {
+		t.Errorf("selected_add.txt was not deleted: %q", afterRollback["selected_add.txt"])
+	}
+
+	// Property 2: ALL unselected files remain exactly as they were before the selective rollback.
+	unselectedPaths := []string{
+		"unselected_mod.txt",
+		"unselected_add.txt",
+		"keep_alone.txt",
+		"sub/nested.txt",
+	}
+	for _, p := range unselectedPaths {
+		if afterRollback[p] != beforeRollback[p] {
+			t.Errorf("unselected file %s changed: before %q, after %q", p, beforeRollback[p], afterRollback[p])
+		}
+	}
+	// unselected_del.txt must still be deleted
+	if _, ok := afterRollback["unselected_del.txt"]; ok {
+		t.Errorf("unselected_del.txt should remain deleted")
+	}
+
+	// Property 3: The backup preserves the state before rollback and can be undone.
+	undo, err := g.FindSnapshot(backup.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := g.Rollback(undo, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	afterUndo := diskState(t, dir)
+	for path, old := range beforeRollback {
+		if afterUndo[path] != old {
+			t.Errorf("after undoing selective rollback %s = %q, was %q", path, afterUndo[path], old)
+		}
 	}
 }
 

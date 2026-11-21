@@ -67,9 +67,10 @@ Nothing else is needed: before every prompt you send to the agent, Holdfast save
 point on its own. If a task broke everything:
 
 ```bash
-holdfast guard list             # restore points: when, before which prompt, what changed since
-holdfast guard diff --to 2      # what exactly changed after point 2
-holdfast guard rollback --to 2  # bring the files back to point 2 (shows the list and asks first)
+holdfast guard list                     # restore points: when, before which prompt, what changed since
+holdfast guard diff --to 2              # what exactly changed after point 2
+holdfast guard rollback --to 2          # bring the files back to point 2 (shows the list and asks first)
+holdfast guard rollback --to 2 src/     # or selectively roll back only specific files or directories
 ```
 
 Claude Code's built-in `/rewind` [does not track](https://code.claude.com/docs/en/checkpointing#limitations)
@@ -275,6 +276,8 @@ deleted), so it never takes more than 10 MB on disk; `holdfast guard log` reads 
   `guard rollback` say so, and you either finish it (`guard rollback --resume`) or return to
   the state before it (`guard rollback --abort`). A rollback of many files is still not one
   atomic file-system operation: in between, the files can be half restored.
+- **Selective rollback:** Specify paths or globs to restore only individual files or directories
+  without discarding the rest of the agent's work: `holdfast guard rollback --to 2 path/to/file.go "src/**"`.
 - **A human decides on rollback:** the agent can look at `guard list` and `guard diff`, but for
   `guard rollback` the hook asks for your confirmation.
 - **If a restore point wasn't created,** Holdfast doesn't stay silent: a warning appears in

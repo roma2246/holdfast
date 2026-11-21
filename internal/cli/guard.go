@@ -329,14 +329,18 @@ func humanAgo(d time.Duration) string {
 
 func (a *app) guardDiffCmd() *cobra.Command {
 	var (
-		stat bool
-		name string
-		to   int
+		stat     bool
+		name     string
+		to       int
+		pathFlag []string
 	)
 	cmd := &cobra.Command{
-		Use:   "diff",
+		Use:   "diff [PATH...]",
 		Short: "Show the changes since a restore point",
-		Args:  cobra.NoArgs,
+		Long: `Shows what has changed since a restore point.
+If PATH arguments or --path flags are given, only changes matching those paths
+are shown.`,
+		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			g, err := a.openGit()
 			if err != nil {
@@ -346,20 +350,27 @@ func (a *app) guardDiffCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ch, err := g.ChangesSince(snap)
+			rawPaths := append(args, pathFlag...)
+			filterPaths := a.normalizeFilterPaths(g.Dir, rawPaths)
+			ch, err := g.ChangesSince(snap, filterPaths...)
 			if err != nil {
 				return err
 			}
 			if ch.Empty() {
-				fmt.Fprintf(a.out, "No changes since snapshot %s\n", snap.Name())
+				if len(filterPaths) > 0 {
+					fmt.Fprintf(a.out, "No changes matching the specified path(s) since snapshot %s\n", snap.Name())
+				} else {
+					fmt.Fprintf(a.out, "No changes since snapshot %s\n", snap.Name())
+				}
 				return nil
 			}
-			return g.Diff(a.out, snap, guard.DiffOptions{Stat: stat, Color: isTerminal(a.out)})
+			return g.Diff(a.out, snap, guard.DiffOptions{Stat: stat, Color: isTerminal(a.out)}, filterPaths...)
 		},
 	}
 	cmd.Flags().BoolVar(&stat, "stat", false, "per-file statistics only")
 	cmd.Flags().IntVar(&to, "to", 0, "restore point number from holdfast guard list (1 is the latest)")
 	cmd.Flags().StringVar(&name, "snapshot", "", "name of a snapshot or backup (the latest by default)")
+	cmd.Flags().StringSliceVarP(&pathFlag, "path", "p", nil, "specific file or glob to show diff for")
 	return cmd
 }
 
@@ -369,19 +380,23 @@ func (a *app) guardRollbackCmd() *cobra.Command {
 		name          string
 		to            int
 		resume, abort bool
+		pathFlag      []string
 	)
 	cmd := &cobra.Command{
-		Use:   "rollback",
+		Use:   "rollback [PATH...]",
 		Short: "Return the files to a restore point (asks for confirmation)",
 		Long: `Returns the working tree to a restore point: changed and deleted files are
 restored, files that appeared after the point are deleted. Branches, commits
 and the git index are not changed. The current state is saved before the
 rollback, so the rollback itself can be undone.
 
+If PATH arguments or --path flags are given, only matching files or directories
+are rolled back (selective rollback); other files are left as they are.
+
 If a rollback was interrupted (an error, a crash, a closed terminal), the next
 one refuses to start until you either finish it (--resume) or return to the
 state before it (--abort).`,
-		Args: cobra.NoArgs,
+		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if resume && abort {
 				return errors.New("--resume and --abort exclude each other")
@@ -397,6 +412,11 @@ state before it (--abort).`,
 			pending, err := g.PendingRollback()
 			if err != nil {
 				return err
+			}
+			rawPaths := append(args, pathFlag...)
+			filterPaths := a.normalizeFilterPaths(g.Dir, rawPaths)
+			if continuing && len(filterPaths) > 0 {
+				return errors.New("--resume and --abort continue the interrupted rollback as it was; drop the paths")
 			}
 			var snap guard.Snapshot
 			switch {
@@ -421,20 +441,29 @@ state before it (--abort).`,
 			}
 			// The plan is built before any changes: everything the rollback would
 			// overwrite or delete has to be in the backup, otherwise the rollback won't start.
-			plan, err := g.PlanRollback(snap)
+			plan, err := g.PlanRollback(snap, filterPaths...)
 			if err != nil {
 				return err
 			}
 			ch := plan.Changes
 			if ch.Empty() && !continuing {
-				fmt.Fprintf(a.out, "The working tree matches snapshot %s: nothing to roll back\n", snap.Name())
+				if len(filterPaths) > 0 {
+					fmt.Fprintf(a.out, "No changes matching the specified path(s) since snapshot %s\n", snap.Name())
+				} else {
+					fmt.Fprintf(a.out, "The working tree matches snapshot %s: nothing to roll back\n", snap.Name())
+				}
 				return nil
+			}
+			targetDesc := ""
+			if len(filterPaths) > 0 {
+				total := len(ch.Modified) + len(ch.Added)
+				targetDesc = fmt.Sprintf(" (%d matching file%s)", total, plural(total))
 			}
 			when := ""
 			if !snap.Time.IsZero() {
 				when = " (" + snap.Time.Local().Format("2006-01-02 15:04:05") + ", " + snapshotLabel(snap) + ")"
 			}
-			fmt.Fprintf(a.out, "Rollback to snapshot %s%s:\n", snap.Name(), when)
+			fmt.Fprintf(a.out, "Rollback%s to snapshot %s%s:\n", targetDesc, snap.Name(), when)
 			hidden := map[string]bool{}
 			for _, h := range plan.Hidden {
 				hidden[h] = true
@@ -463,11 +492,15 @@ state before it (--abort).`,
 				fmt.Fprintln(a.out, "Cancelled")
 				return nil
 			}
-			run := g.Rollback
+			var (
+				done   guard.Changes
+				backup guard.Snapshot
+			)
 			if continuing {
-				run = g.ContinueRollback
+				done, backup, err = g.ContinueRollback(snap, time.Now())
+			} else {
+				done, backup, err = g.Rollback(snap, time.Now(), filterPaths...)
 			}
-			done, backup, err := run(snap, time.Now())
 			if err != nil {
 				return err
 			}
@@ -481,7 +514,65 @@ state before it (--abort).`,
 	cmd.Flags().StringVar(&name, "snapshot", "", "name of a snapshot or backup (the latest by default)")
 	cmd.Flags().BoolVar(&resume, "resume", false, "finish an interrupted rollback")
 	cmd.Flags().BoolVar(&abort, "abort", false, "undo an interrupted rollback: return to the state before it")
+	cmd.Flags().StringSliceVarP(&pathFlag, "path", "p", nil, "specific file or glob to roll back (can be repeated)")
 	return cmd
+}
+
+// normalizeFilterPaths converts user-supplied path patterns into slash-separated paths relative to root.
+func (a *app) normalizeFilterPaths(root string, paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	baseDir := a.dir
+	if !filepath.IsAbs(baseDir) {
+		if abs, err := filepath.Abs(baseDir); err == nil {
+			baseDir = abs
+		}
+	}
+	var out []string
+	for _, p := range paths {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if strings.ContainsAny(p, "*?[") {
+			if filepath.IsAbs(p) {
+				if rel, err := filepath.Rel(root, p); err == nil && !strings.HasPrefix(rel, "..") {
+					out = append(out, filepath.ToSlash(rel))
+					continue
+				}
+			} else if baseDir != root && isWithinPath(root, baseDir) {
+				if relDir, err := filepath.Rel(root, baseDir); err == nil && !strings.HasPrefix(relDir, "..") {
+					out = append(out, filepath.ToSlash(filepath.Join(relDir, p)))
+					continue
+				}
+			}
+			out = append(out, filepath.ToSlash(p))
+			continue
+		}
+		abs := p
+		if !filepath.IsAbs(p) {
+			abs = filepath.Join(baseDir, p)
+		}
+		if rel, err := filepath.Rel(root, abs); err == nil && !strings.HasPrefix(rel, "..") {
+			out = append(out, filepath.ToSlash(rel))
+		} else {
+			out = append(out, filepath.ToSlash(filepath.Clean(p)))
+		}
+	}
+	return out
+}
+
+func isWithinPath(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 func (a *app) guardLogCmd() *cobra.Command {

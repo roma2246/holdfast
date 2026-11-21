@@ -369,3 +369,132 @@ func TestWriteTreeCachedInterleaved(t *testing.T) {
 		t.Fatalf("the snapshot holds %q instead of the file on disk", got)
 	}
 }
+
+func TestMatchesPath(t *testing.T) {
+	cases := []struct {
+		pattern string
+		target  string
+		want    bool
+	}{
+		{"", "a.txt", true},
+		{".", "a.txt", true},
+		{"a.txt", "a.txt", true},
+		{"./a.txt", "a.txt", true},
+		{"a.txt", "b.txt", false},
+		{"src/auth.go", "src/auth.go", true},
+		{"src/auth.go", "src/other.go", false},
+		// Directory matching
+		{"src", "src/auth.go", true},
+		{"src/", "src/auth.go", true},
+		{"src", "src_test/auth.go", false},
+		{"src", "src", true},
+		// Globs
+		{"*.go", "main.go", true},
+		{"*.go", "src/auth.go", true},
+		{"*.go", "README.md", false},
+		{"src/*.go", "src/auth.go", true},
+		{"src/*.go", "src/sub/auth.go", false},
+		{"src/**/*.go", "src/sub/deep/auth.go", true},
+		{"doc?", "docs", true},
+		// Windows path separators
+		{"src\\auth.go", "src/auth.go", true},
+		{"src\\sub\\auth.go", "src/sub/auth.go", true},
+	}
+	for _, tc := range cases {
+		got := MatchesPath(tc.pattern, tc.target)
+		if got != tc.want {
+			t.Errorf("MatchesPath(%q, %q) = %v; want %v", tc.pattern, tc.target, got, tc.want)
+		}
+	}
+}
+
+func TestSelectiveRollback(t *testing.T) {
+	dir := gitRepo(t, true)
+	write(t, dir, "a.txt", "original a\n")
+	write(t, dir, "b.txt", "original b\n")
+	write(t, dir, "sub/c.txt", "original c\n")
+	g, err := OpenGit(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := g.CreateSnapshot(time.Now(), SnapshotMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Agent modifies a.txt, b.txt, sub/c.txt and adds new_a.txt, new_b.txt
+	write(t, dir, "a.txt", "agent a\n")
+	write(t, dir, "b.txt", "agent b\n")
+	write(t, dir, "sub/c.txt", "agent c\n")
+	write(t, dir, "new_a.txt", "agent new a\n")
+	write(t, dir, "new_b.txt", "agent new b\n")
+
+	// PlanRollback with filter
+	planA, err := g.PlanRollback(snap, "a.txt", "new_a.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planA.Changes.Modified) != 1 || planA.Changes.Modified[0] != "a.txt" {
+		t.Fatalf("expected only a.txt modified, got: %v", planA.Changes.Modified)
+	}
+	if len(planA.Changes.Added) != 1 || planA.Changes.Added[0] != "new_a.txt" {
+		t.Fatalf("expected only new_a.txt added, got: %v", planA.Changes.Added)
+	}
+
+	// Diff with filter
+	var diffBuf bytes.Buffer
+	if err := g.Diff(&diffBuf, snap, DiffOptions{}, "a.txt"); err != nil {
+		t.Fatal(err)
+	}
+	diffStr := diffBuf.String()
+	if !strings.Contains(diffStr, "a.txt") || strings.Contains(diffStr, "b.txt") {
+		t.Fatalf("expected diff only for a.txt, got:\n%s", diffStr)
+	}
+
+	// Execute selective rollback for a.txt and new_a.txt
+	done, backup, err := g.Rollback(snap, time.Now(), "a.txt", "new_a.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(done.Modified) != 1 || done.Modified[0] != "a.txt" {
+		t.Errorf("done.Modified = %v; want [a.txt]", done.Modified)
+	}
+	if len(done.Added) != 1 || done.Added[0] != "new_a.txt" {
+		t.Errorf("done.Added = %v; want [new_a.txt]", done.Added)
+	}
+
+	// a.txt must be restored
+	if got := read(t, dir, "a.txt"); got != "original a\n" {
+		t.Errorf("a.txt = %q; want original", got)
+	}
+	// new_a.txt must be deleted
+	if _, err := os.Stat(filepath.Join(dir, "new_a.txt")); !os.IsNotExist(err) {
+		t.Errorf("new_a.txt should have been deleted")
+	}
+
+	// b.txt, sub/c.txt and new_b.txt MUST remain untouched!
+	if got := read(t, dir, "b.txt"); got != "agent b\n" {
+		t.Errorf("b.txt = %q; want agent b", got)
+	}
+	if got := read(t, dir, "sub/c.txt"); got != "agent c\n" {
+		t.Errorf("sub/c.txt = %q; want agent c", got)
+	}
+	if got := read(t, dir, "new_b.txt"); got != "agent new b\n" {
+		t.Errorf("new_b.txt = %q; want agent new b", got)
+	}
+
+	// Rolling back to the backup restores a.txt to "agent a" and restores deleted new_a.txt
+	undoDone, _, err := g.Rollback(backup, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(undoDone.Modified) != 2 {
+		t.Errorf("undo modified = %v; want 2 files", undoDone.Modified)
+	}
+	if got := read(t, dir, "a.txt"); got != "agent a\n" {
+		t.Errorf("after undo a.txt = %q; want agent a", got)
+	}
+	if got := read(t, dir, "new_a.txt"); got != "agent new a\n" {
+		t.Errorf("after undo new_a.txt = %q; want agent new a", got)
+	}
+}
