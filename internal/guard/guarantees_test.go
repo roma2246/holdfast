@@ -3,6 +3,7 @@ package guard
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -22,6 +23,8 @@ import (
 //     or else the rollback does not start;
 //   - every successful snapshot holds the files as they are on disk, even
 //     when several snapshot processes run at once;
+//   - a rollback interrupted at any point is reported to the next process,
+//     and both finishing it and undoing it give a consistent state;
 //   - a snapshot of another working tree is never picked;
 //   - mass deletion is allowed only if what is deleted is in the restore point;
 //   - a failed restore point does not look like a successful one;
@@ -331,6 +334,220 @@ func TestParallelSnapshotsMatchDisk(t *testing.T) {
 	}
 	if diskState(t, dir)["a.txt"] != want["a.txt"] {
 		t.Fatal("snapshots changed the working tree")
+	}
+}
+
+// rollbackFixture: a snapshot of the original state, then an agent edits a
+// file, deletes one and adds a few (also in a new directory).
+func rollbackFixture(t *testing.T) (dir string, snap Snapshot, original, edited map[string]string) {
+	t.Helper()
+	dir = gitRepo(t, true)
+	g, _ := OpenGit(dir)
+	original = diskState(t, dir)
+	snap, err := g.CreateSnapshot(time.Now(), SnapshotMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "a.txt", "broken by the agent\n")
+	if err := os.Remove(filepath.Join(dir, "b.txt")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "c.txt", "new c\n")
+	write(t, dir, "gen/d.txt", "new d\n")
+	write(t, dir, "gen/e.txt", "new e\n")
+	return dir, snap, original, diskState(t, dir)
+}
+
+func sameState(t *testing.T, what string, got, want map[string]string) {
+	t.Helper()
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("%s:\n got  %v\n want %v", what, got, want)
+	}
+}
+
+// Roadmap B2: the rollback stops at each point where a crash can happen; a new
+// process (a fresh Git value, only the disk is shared) must see it, refuse a
+// regular rollback, keep the snapshots it needs, and both --resume and
+// --abort must end in a consistent state that is checked file by file.
+func TestInterruptedRollbackIsRecoverable(t *testing.T) {
+	points := []struct {
+		step string
+		nth  int // stop at the nth time this step is reached
+	}{
+		{"journaled", 1},
+		{"deleted", 1}, // one added file deleted, two left
+		{"deleted", 2},
+		{"restored", 1}, // everything written, not verified yet
+	}
+	for _, p := range points {
+		for _, mode := range []string{"resume", "abort"} {
+			t.Run(fmt.Sprintf("%s#%d/%s", p.step, p.nth, mode), func(t *testing.T) {
+				dir, snap, original, edited := rollbackFixture(t)
+				g, _ := OpenGit(dir)
+				seen := 0
+				rollbackStep = func(step string) error {
+					if step == p.step {
+						if seen++; seen == p.nth {
+							return errors.New("simulated crash")
+						}
+					}
+					return nil
+				}
+				_, backup, err := g.Rollback(snap, time.Now())
+				rollbackStep = nil
+				if err == nil || !strings.Contains(err.Error(), "stopped halfway") || !strings.Contains(err.Error(), backup.Name()) {
+					t.Fatalf("the interruption must be reported with the backup name: %v", err)
+				}
+
+				g2, _ := OpenGit(dir)
+				j, err := g2.PendingRollback()
+				if err != nil || j == nil || j.Target.Commit != snap.Commit || j.Backup.Commit != backup.Commit {
+					t.Fatalf("the next process does not see the interrupted rollback: %+v, %v", j, err)
+				}
+				if _, _, err := g2.Rollback(snap, time.Now()); !errors.Is(err, ErrRollbackPending) {
+					t.Fatalf("a regular rollback must refuse while one is pending: %v", err)
+				}
+				// Pruning keeps what the pending rollback needs.
+				if err := g2.Prune(1); err != nil {
+					t.Fatal(err)
+				}
+				write(t, dir, "trigger.txt", "x")
+				if _, err := g2.CreateSnapshot(time.Now(), SnapshotMeta{}); err != nil {
+					t.Fatal(err)
+				}
+				os.Remove(filepath.Join(dir, "trigger.txt"))
+				if err := g2.Prune(1); err != nil {
+					t.Fatal(err)
+				}
+				if !g2.refExists(snap.Ref) {
+					t.Fatal("pruning deleted the target of the pending rollback")
+				}
+
+				target, want := j.Target.snapshot(dir), original
+				if mode == "abort" {
+					target, want = j.Backup.snapshot(dir), edited
+				}
+				if _, _, err := g2.ContinueRollback(target, time.Now()); err != nil {
+					t.Fatalf("%s: %v", mode, err)
+				}
+				sameState(t, mode, diskState(t, dir), want)
+				if j, err := g2.PendingRollback(); j != nil || err != nil {
+					t.Fatalf("the journal stays after a successful %s: %+v %v", mode, j, err)
+				}
+			})
+		}
+	}
+}
+
+// A restored file that does not match the snapshot (here: overwritten right
+// after the restore) is caught by the check, and the rollback is not reported as done.
+func TestRollbackVerifiesResult(t *testing.T) {
+	dir, snap, original, _ := rollbackFixture(t)
+	g, _ := OpenGit(dir)
+	rollbackStep = func(step string) error {
+		if step == "restored" {
+			write(t, dir, "a.txt", "written by someone else\n")
+		}
+		return nil
+	}
+	_, _, err := g.Rollback(snap, time.Now())
+	rollbackStep = nil
+	if err == nil || !strings.Contains(err.Error(), "a.txt (differs from the snapshot)") {
+		t.Fatalf("expected a verification error about a.txt: %v", err)
+	}
+	if j, _ := g.PendingRollback(); j == nil {
+		t.Fatal("a failed verification must keep the journal")
+	}
+	if _, _, err := g.ContinueRollback(snap, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	sameState(t, "after resume", diskState(t, dir), original)
+}
+
+// Roadmap S08: when the journal can't be written, no file is changed.
+func TestRollbackDoesNotStartWithoutJournal(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir, snap, _, edited := rollbackFixture(t)
+	g, _ := OpenGit(dir)
+	if _, err := g.WriteTree(); err != nil { // creates .git/holdfast
+		t.Fatal(err)
+	}
+	hf := filepath.Join(gitDir(dir), "holdfast")
+	if err := os.Chmod(hf, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(hf, 0o755)
+	_, _, err := g.Rollback(snap, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "did not start") {
+		t.Fatalf("expected a refusal: %v", err)
+	}
+	sameState(t, "files after a refused rollback", diskState(t, dir), edited)
+}
+
+// A damaged journal still blocks a rollback and is reported, not ignored.
+func TestDamagedJournalIsReported(t *testing.T) {
+	dir, snap, _, edited := rollbackFixture(t)
+	g, _ := OpenGit(dir)
+	write(t, filepath.Join(gitDir(dir), "holdfast"), "rollback.json", "{half")
+	if _, err := g.PendingRollback(); !errors.Is(err, ErrRollbackPending) {
+		t.Fatalf("a damaged journal must be reported: %v", err)
+	}
+	if _, _, err := g.Rollback(snap, time.Now()); !errors.Is(err, ErrRollbackPending) {
+		t.Fatalf("a damaged journal must block a rollback: %v", err)
+	}
+	sameState(t, "files", diskState(t, dir), edited)
+}
+
+// Two rollbacks at once: no error other than "another rollback started", and
+// the result is the snapshot with no journal left over.
+func TestConcurrentRollbacks(t *testing.T) {
+	dir, snap, original, _ := rollbackFixture(t)
+	g, _ := OpenGit(dir)
+	var wg sync.WaitGroup
+	errs := make([]error, 4)
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, _, errs[i] = g.Rollback(snap, time.Now())
+		}(i)
+	}
+	wg.Wait()
+	ok := 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			ok++
+		case strings.Contains(err.Error(), "another rollback started") || errors.Is(err, ErrRollbackPending):
+		default:
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+	if ok == 0 {
+		t.Fatal("no rollback succeeded")
+	}
+	sameState(t, "after concurrent rollbacks", diskState(t, dir), original)
+	if j, err := g.PendingRollback(); j != nil || err != nil {
+		t.Fatalf("a journal is left: %+v %v", j, err)
+	}
+}
+
+func TestSweepTemp(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	old := filepath.Join(dir, fmt.Sprintf("index-%d-1.tmp", now.Add(-2*time.Hour).Unix()))
+	fresh := filepath.Join(dir, fmt.Sprintf("index-%d-2.tmp", now.Unix()))
+	other := filepath.Join(dir, "index")
+	for _, p := range []string{old, fresh, other} {
+		write(t, dir, filepath.Base(p), "x")
+	}
+	sweepTemp(dir, now.Add(-time.Hour))
+	for p, want := range map[string]bool{old: false, fresh: true, other: true} {
+		if _, err := os.Stat(p); (err == nil) != want {
+			t.Errorf("%s: exists=%v, want %v", filepath.Base(p), err == nil, want)
+		}
 	}
 }
 

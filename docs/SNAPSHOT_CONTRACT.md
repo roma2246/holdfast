@@ -55,10 +55,35 @@ are never picked across trees [`TestWorktreesAreIsolated`].
 - A snapshot is not a freeze. If another program writes a file while the snapshot is
   being taken, either version of that file may land in it. Holdfast coordinates its own
   processes, but it cannot stop an external writer: stop the agent before rolling back.
-- A multi-file rollback is not one atomic file-system operation. What happens after an
-  interrupted rollback is roadmap item B2 and is not verified yet.
-- Pruning while a rollback to the pruned snapshot is running is not covered by a test yet
-  (roadmap B1, last item).
+- A multi-file rollback is not one atomic file-system operation: while it runs, the files
+  can be half restored. See "Rollback" below for how an interruption is handled.
+
+## Rollback
+
+1. The plan is computed and everything the rollback will overwrite or delete is saved as a
+   backup under `refs/holdfast-backup/`; the backup is read back. If either fails, no file
+   is touched [`TestRollbackStopsWhenBackupImpossible`].
+2. A journal (`<git dir>/holdfast/rollback.json`: target, backup, start time) is written
+   and synced. If it can't be written, no file is touched
+   [`TestRollbackDoesNotStartWithoutJournal`]. Only one journal can exist, so two rollbacks
+   never change files at once [`TestConcurrentRollbacks`].
+3. Files that appeared after the snapshot are deleted, then the changed ones are restored.
+4. Every restored path is hashed by git and compared with the snapshot; every deleted path
+   must be gone. Only then is the journal removed and the rollback reported as done
+   [`TestRollbackVerifiesResult`].
+
+If the rollback stops anywhere after step 2 (simulated after the journal, after the first
+and second deletion, after restoring and before the check), the next process sees the
+journal: `guard list` and `doctor` warn, a regular rollback refuses, and the snapshots
+the journal names are not pruned. `--resume` finishes the rollback, `--abort` returns to
+the backup; both back up the half-restored state first and end with the check above
+[`TestInterruptedRollbackIsRecoverable`, `TestGuardInterruptedRollback`]. A damaged
+journal is reported as an interrupted rollback, not ignored [`TestDamagedJournalIsReported`].
+
+Not covered: a crash inside `git checkout-index` itself (some files written, some not) is
+not simulated separately; it leaves the same kind of state as the "after the first
+deletion" point and is handled by the same recovery, but there is no test for that exact
+moment.
 
 ## Implementation notes
 

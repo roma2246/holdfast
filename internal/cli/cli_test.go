@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -393,5 +394,98 @@ func TestLogColumnWidths(t *testing.T) {
 	}
 	if got := relTarget("/repo", "ls -la"); got != "ls -la" {
 		t.Error(got)
+	}
+}
+
+// An interrupted rollback (roadmap B2) as the user sees it: list warns,
+// a regular rollback refuses with the two ways out, --resume and --abort work.
+// The interruption is staged the way a crash leaves it: a journal on disk and
+// half-restored files.
+func TestGuardInterruptedRollback(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	dir := t.TempDir()
+	gitCmd := func(args ...string) string {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	gitCmd("init", "-q")
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644)
+	gitCmd("add", "-A")
+	gitCmd("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
+	if code, _, _ := run(t, "", "-C", dir, "guard", "start"); code != 0 {
+		t.Fatal("start")
+	}
+	broken := "package main // broken by agent\n"
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte(broken), 0o644)
+	os.WriteFile(filepath.Join(dir, "junk.txt"), []byte("junk\n"), 0o644)
+	if code, out, _ := run(t, "", "-C", dir, "guard", "start"); code != 0 { // stands in for the backup
+		t.Fatal(out)
+	}
+	refs := strings.Fields(gitCmd("for-each-ref", "--sort=refname", "--format=%(refname) %(objectname)", "refs/holdfast/"))
+	if len(refs) != 4 {
+		t.Fatalf("refs: %v", refs)
+	}
+	journal := filepath.Join(dir, ".git", "holdfast", "rollback.json")
+	stage := func() {
+		// Half done: junk.txt already deleted, main.go not restored yet.
+		os.Remove(filepath.Join(dir, "junk.txt"))
+		j := fmt.Sprintf(`{"target":{"ref":%q,"commit":%q},"backup":{"ref":%q,"commit":%q},"started":"2026-11-17T12:00:00Z","pid":1}`,
+			refs[0], refs[1], refs[2], refs[3])
+		if err := os.WriteFile(journal, []byte(j), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	readMain := func() string {
+		data, _ := os.ReadFile(filepath.Join(dir, "main.go"))
+		return string(data)
+	}
+
+	stage()
+	if _, out, _ := run(t, "", "-C", dir, "guard", "list"); !strings.Contains(out, "was interrupted") || !strings.Contains(out, "--resume") {
+		t.Fatalf("list must warn:\n%s", out)
+	}
+	if _, out, _ := run(t, "", "-C", dir, "doctor"); !strings.Contains(out, "rollback was interrupted") {
+		t.Fatalf("doctor must report the interrupted rollback:\n%s", out)
+	}
+	if code, _, errOut := run(t, "", "-C", dir, "guard", "rollback", "--yes"); code != ExitFailure || !strings.Contains(errOut, "--abort") {
+		t.Fatalf("a regular rollback must refuse: %d %s", code, errOut)
+	}
+	if code, _, _ := run(t, "", "-C", dir, "guard", "rollback", "--resume", "--abort"); code != ExitFailure {
+		t.Fatal("--resume with --abort must fail")
+	}
+	if code, _, _ := run(t, "", "-C", dir, "guard", "rollback", "--resume", "--to", "1"); code != ExitFailure {
+		t.Fatal("--resume with --to must fail")
+	}
+	if code, out, _ := run(t, "", "-C", dir, "guard", "rollback", "--resume", "--yes"); code != 0 || !strings.Contains(out, "verified") {
+		t.Fatalf("resume: %d\n%s", code, out)
+	}
+	if readMain() != "package main\n" {
+		t.Fatalf("after --resume main.go = %q", readMain())
+	}
+	if _, err := os.Stat(journal); !os.IsNotExist(err) {
+		t.Fatal("the journal must be gone after --resume")
+	}
+	if code, _, _ := run(t, "", "-C", dir, "guard", "rollback", "--resume", "--yes"); code != ExitFailure {
+		t.Fatal("--resume without a pending rollback must fail")
+	}
+
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte(broken), 0o644)
+	os.WriteFile(filepath.Join(dir, "junk.txt"), []byte("junk\n"), 0o644)
+	stage()
+	if code, out, _ := run(t, "", "-C", dir, "guard", "rollback", "--abort", "--yes"); code != 0 {
+		t.Fatalf("abort: %d\n%s", code, out)
+	}
+	if readMain() != broken {
+		t.Fatalf("after --abort main.go = %q", readMain())
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "junk.txt")); err != nil || string(data) != "junk\n" {
+		t.Fatal("--abort must bring junk.txt back")
 	}
 }

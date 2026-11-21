@@ -269,6 +269,12 @@ deleted), so it never takes more than 10 MB on disk; `holdfast guard log` reads 
   that will be overwritten or deleted — even files git currently ignores. If something can't be
   backed up, the rollback doesn't start. To undo a rollback:
   `holdfast guard rollback --snapshot <backup name>` (the command is printed after the rollback).
+- **An interrupted rollback is not forgotten.** A rollback writes a journal before changing any
+  file and checks every restored file against the snapshot before calling itself done. If it
+  stops halfway (an error, a crash, a closed terminal), `guard list`, `doctor` and the next
+  `guard rollback` say so, and you either finish it (`guard rollback --resume`) or return to
+  the state before it (`guard rollback --abort`). A rollback of many files is still not one
+  atomic file-system operation: in between, the files can be half restored.
 - **A human decides on rollback:** the agent can look at `guard list` and `guard diff`, but for
   `guard rollback` the hook asks for your confirmation.
 - **If a restore point wasn't created,** Holdfast doesn't stay silent: a warning appears in

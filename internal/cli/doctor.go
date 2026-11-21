@@ -297,6 +297,14 @@ func checkSnapshots(root string, gitOK bool, now time.Time) check {
 		c.hint = "git init: restore points are stored in git"
 		return c
 	}
+	if pending, err := g.PendingRollback(); err != nil || pending != nil {
+		c.detail = "a rollback was interrupted, so the files may be half restored"
+		if pending != nil {
+			c.detail += " (to " + pending.Target.Name() + ", backup " + pending.Backup.Name() + ")"
+		}
+		c.hint = "finish it: holdfast guard rollback --resume; or undo it: holdfast guard rollback --abort"
+		return c
+	}
 	snaps, err := g.Snapshots()
 	if err != nil {
 		c.detail = err.Error()

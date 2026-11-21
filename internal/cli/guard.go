@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -256,6 +257,11 @@ func (a *app) guardListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if pending, err := g.PendingRollback(); err != nil {
+				fmt.Fprintf(a.out, "⚠ %v\n\n", err)
+			} else if pending != nil {
+				fmt.Fprintf(a.out, "⚠ %s\n\n", pending.PendingHelp())
+			}
 			if msg := guard.LastCheckpointError(root); msg != "" {
 				fmt.Fprintf(a.out, "⚠ The latest automatic restore point was NOT created: %s\n  The changes from the last prompt are not covered by a restore point.\n\n", msg)
 			}
@@ -359,9 +365,10 @@ func (a *app) guardDiffCmd() *cobra.Command {
 
 func (a *app) guardRollbackCmd() *cobra.Command {
 	var (
-		yes  bool
-		name string
-		to   int
+		yes           bool
+		name          string
+		to            int
+		resume, abort bool
 	)
 	cmd := &cobra.Command{
 		Use:   "rollback",
@@ -369,16 +376,48 @@ func (a *app) guardRollbackCmd() *cobra.Command {
 		Long: `Returns the working tree to a restore point: changed and deleted files are
 restored, files that appeared after the point are deleted. Branches, commits
 and the git index are not changed. The current state is saved before the
-rollback, so the rollback itself can be undone.`,
+rollback, so the rollback itself can be undone.
+
+If a rollback was interrupted (an error, a crash, a closed terminal), the next
+one refuses to start until you either finish it (--resume) or return to the
+state before it (--abort).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if resume && abort {
+				return errors.New("--resume and --abort exclude each other")
+			}
+			continuing := resume || abort
+			if continuing && (name != "" || to > 0) {
+				return errors.New("--resume and --abort take the snapshot from the interrupted rollback; drop --snapshot and --to")
+			}
 			g, err := a.openGit()
 			if err != nil {
 				return err
 			}
-			snap, err := pickSnapshot(g, name, to)
+			pending, err := g.PendingRollback()
 			if err != nil {
 				return err
+			}
+			var snap guard.Snapshot
+			switch {
+			case continuing && pending == nil:
+				return errors.New("there is no interrupted rollback to resume or abort")
+			case continuing:
+				js := pending.Target
+				if abort {
+					js = pending.Backup
+				}
+				// The full snapshot (time, label) if its ref still exists;
+				// otherwise the commit from the journal is enough.
+				if snap, err = g.FindSnapshot(js.Ref); err != nil {
+					snap = guard.Snapshot{Ref: js.Ref, Commit: js.Commit, Meta: guard.SnapshotMeta{Worktree: g.Dir}}
+				}
+			case pending != nil:
+				return fmt.Errorf("%w: %s", guard.ErrRollbackPending, pending.PendingHelp())
+			default:
+				if snap, err = pickSnapshot(g, name, to); err != nil {
+					return err
+				}
 			}
 			// The plan is built before any changes: everything the rollback would
 			// overwrite or delete has to be in the backup, otherwise the rollback won't start.
@@ -387,12 +426,15 @@ rollback, so the rollback itself can be undone.`,
 				return err
 			}
 			ch := plan.Changes
-			if ch.Empty() {
+			if ch.Empty() && !continuing {
 				fmt.Fprintf(a.out, "The working tree matches snapshot %s: nothing to roll back\n", snap.Name())
 				return nil
 			}
-			fmt.Fprintf(a.out, "Rollback to snapshot %s (%s), %s:\n", snap.Name(),
-				snap.Time.Local().Format("2006-01-02 15:04:05"), snapshotLabel(snap))
+			when := ""
+			if !snap.Time.IsZero() {
+				when = " (" + snap.Time.Local().Format("2006-01-02 15:04:05") + ", " + snapshotLabel(snap) + ")"
+			}
+			fmt.Fprintf(a.out, "Rollback to snapshot %s%s:\n", snap.Name(), when)
 			hidden := map[string]bool{}
 			for _, h := range plan.Hidden {
 				hidden[h] = true
@@ -414,15 +456,22 @@ rollback, so the rollback itself can be undone.`,
 			for _, f := range plan.Skipped {
 				fmt.Fprintf(a.out, "  keep     %s  (a nested git repository: its contents can't be saved)\n", f)
 			}
+			if ch.Empty() {
+				fmt.Fprintln(a.out, "  nothing left to change; the interrupted rollback will be checked and closed")
+			}
 			if !yes && !a.confirm("Roll back these changes?") {
 				fmt.Fprintln(a.out, "Cancelled")
 				return nil
 			}
-			done, backup, err := g.Rollback(snap, time.Now())
+			run := g.Rollback
+			if continuing {
+				run = g.ContinueRollback
+			}
+			done, backup, err := run(snap, time.Now())
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(a.out, "Done: %d restored, %d deleted.\n", len(done.Modified), len(done.Added))
+			fmt.Fprintf(a.out, "Done and verified: %d restored, %d deleted.\n", len(done.Modified), len(done.Added))
 			fmt.Fprintf(a.out, "The state before the rollback is saved. To undo the rollback: holdfast guard rollback --snapshot %s\n", backup.Name())
 			return nil
 		},
@@ -430,6 +479,8 @@ rollback, so the rollback itself can be undone.`,
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "don't ask for confirmation")
 	cmd.Flags().IntVar(&to, "to", 0, "restore point number from holdfast guard list (1 is the latest)")
 	cmd.Flags().StringVar(&name, "snapshot", "", "name of a snapshot or backup (the latest by default)")
+	cmd.Flags().BoolVar(&resume, "resume", false, "finish an interrupted rollback")
+	cmd.Flags().BoolVar(&abort, "abort", false, "undo an interrupted rollback: return to the state before it")
 	return cmd
 }
 

@@ -31,7 +31,7 @@ an older Russian-language layout and Codex hooks and does not match the reposito
 | Guard policy, mass-delete protection, doctor, uninstall, lint, sync | works |
 | Concurrent snapshots | was broken (A3), fixed in B1 |
 | Fast path after re-editing a file | was silently falling back to the slow path, fixed in B1 |
-| Recovery of an interrupted rollback | missing (B2) |
+| Recovery of an interrupted rollback | added in B2: journal, `--resume`/`--abort`, hash check |
 | Selective rollback of chosen files | missing (C1) |
 | Machine-readable output (JSON) | missing (C7) |
 | Hooks for agents other than Claude Code | missing (E) |
@@ -54,9 +54,9 @@ edited a second time): 20 000 files p50 390 ms, p95 4.1 s.
 
 | Task | Status | Evidence | Next step |
 | --- | --- | --- | --- |
-| B1. Snapshot race | done except last item | See below | Test prune during rollback |
-| B2. Interrupted rollback | not started | — | Map partial-failure points of `Rollback` |
-| B3. Coverage and limitations | not started | — | — |
+| B1. Snapshot race | done | See below | — |
+| B2. Interrupted rollback | done | See below | Selective rollback must keep the same journal (C1) |
+| B3. Coverage and limitations | not started | — | Snapshot status/size in `guard list`; binary, symlink, LFS, sparse-checkout tests |
 
 ### B1: what was done
 
@@ -73,7 +73,39 @@ edited a second time): 20 000 files p50 390 ms, p95 4.1 s.
   `-race -count=20`: all passed (160 runs of 8 parallel workers, 0 errors, 0 wrong
   snapshots). Checkpoints in that test prune with `keep=3` concurrently, and no
   concurrency errors occurred.
-- Known leftover: if a process is killed mid-snapshot, an `index-*.tmp` file may stay in
-  `.git/holdfast/`. It is harmless (never read) and not cleaned up yet.
-- Not covered yet: pruning a snapshot while a rollback to it runs. The rollback uses the
-  commit hash, which outlives the ref until `git gc`, but there is no test.
+- Temporary files a killed process leaves in `.git/holdfast/` are removed by the next
+  snapshot once they are over an hour old; the creation time is in the file name, because
+  a private index copy carries the shared index's old modification time
+  [`TestSweepTemp`].
+- Pruning never deletes the target or the backup of a pending rollback
+  [`TestInterruptedRollbackIsRecoverable`]. Between planning and writing the journal a
+  prune can still delete the target ref; the rollback uses the commit hash, which stays
+  until `git gc`, so that window is not a data risk.
+
+### B2: what was done
+
+- Partial-failure points in `Rollback`: after the backup, during deletions, during
+  `checkout-index`, after restoring but before reporting success. Before this change an
+  error there printed only the git error (the backup name was lost) and the next process
+  had no idea a rollback had happened.
+- A journal (`<git dir>/holdfast/rollback.json`) is written, synced and atomically
+  linked into place before the first file changes, and removed only after the result is
+  verified. Writing it is also the lock that keeps two rollbacks from running at once.
+  A failure to write it stops the rollback with nothing changed.
+- The backup is read back before files change.
+- After the rollback git hashes every restored path against the snapshot and every deleted
+  path must be gone. The first run of this check found that a path deleted as a file can
+  legitimately come back as a directory (file↔directory changes); handled and covered by
+  the existing `TestRollbackNeverLosesData` cases.
+- `guard list` and `doctor` warn about a pending rollback; `guard rollback` refuses and
+  names both ways out; `--resume` and `--abort` finish or undo it, also when the snapshot
+  ref has been pruned (the journal keeps the commit).
+- Tests: `TestInterruptedRollbackIsRecoverable` (4 interruption points × resume/abort,
+  each from a fresh process value, checked file by file), `TestRollbackVerifiesResult`,
+  `TestRollbackDoesNotStartWithoutJournal` (scenario S08), `TestDamagedJournalIsReported`,
+  `TestConcurrentRollbacks`, `TestGuardInterruptedRollback` (CLI, doctor).
+- Not simulated: a crash in the middle of `git checkout-index` itself. The recovery path
+  is the same, but that exact moment has no test.
+- Found, not fixed (belongs to C3): the CLI shows a plan, then `Rollback` computes the
+  plan again; if the tree changes in between, the executed plan can differ from the one
+  shown.

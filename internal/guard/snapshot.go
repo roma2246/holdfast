@@ -260,7 +260,7 @@ func (g *Git) writeTreeCached() (string, error) {
 	shared := filepath.Join(dir, "index")
 	// The private copy sits next to the shared index, so the final rename
 	// stays on one file system and is atomic.
-	f, err := os.CreateTemp(dir, "index-*.tmp")
+	f, err := os.CreateTemp(dir, tempPattern("index", time.Now()))
 	if err != nil {
 		return "", err
 	}
@@ -285,7 +285,29 @@ func (g *Git) writeTreeCached() (string, error) {
 	// Publishing the cache is best effort: the tree is already correct, and a
 	// failed rename (e.g. the file is busy on Windows) only costs speed next time.
 	_ = os.Rename(private, shared)
+	sweepTemp(dir, time.Now().Add(-time.Hour))
 	return strings.TrimSpace(out), nil
+}
+
+// tempPattern names a temporary file "<kind>-<unix time>-<random>.tmp". The
+// creation time is in the name because the file's own modification time is
+// not reliable here: a private index copy carries the shared index's old one.
+func tempPattern(kind string, now time.Time) string {
+	return fmt.Sprintf("%s-%d-*.tmp", kind, now.Unix())
+}
+
+// sweepTemp removes temporary files a killed Holdfast process left in dir
+// (private index copies, unfinished journal writes) that were created before
+// the given time, so a run in progress never loses its file.
+func sweepTemp(dir string, before time.Time) {
+	matches, _ := filepath.Glob(filepath.Join(dir, "*-*-*.tmp"))
+	for _, m := range matches {
+		parts := strings.SplitN(filepath.Base(m), "-", 3)
+		created, err := strconv.ParseInt(parts[1], 10, 64)
+		if err == nil && created < before.Unix() {
+			_ = os.Remove(m)
+		}
+	}
 }
 
 // seedIndex fills the freshly created private index f with a copy of the
@@ -393,10 +415,22 @@ func (g *Git) deleteOld(snaps []Snapshot, keep int) error {
 	if keep <= 0 || len(snaps) <= keep {
 		return nil
 	}
+	// The snapshots an interrupted rollback needs (its target and its backup)
+	// are kept whatever their age. A damaged journal pins nothing, but then
+	// rollbacks are blocked anyway until the user deals with it.
+	pinned := map[string]bool{}
+	if j, _ := g.PendingRollback(); j != nil {
+		pinned[j.Target.Ref], pinned[j.Backup.Ref] = true, true
+	}
 	// update-ref --stdin deletes all the extra refs with a single git command.
 	var b strings.Builder
 	for _, s := range snaps[keep:] {
-		fmt.Fprintf(&b, "delete %s\n", s.Ref)
+		if !pinned[s.Ref] {
+			fmt.Fprintf(&b, "delete %s\n", s.Ref)
+		}
+	}
+	if b.Len() == 0 {
+		return nil
 	}
 	_, err := g.run(nil, strings.NewReader(b.String()), "update-ref", "--stdin")
 	return err
@@ -796,7 +830,49 @@ func samePath(a, b string) bool {
 // appeared after it and restores the changed and deleted ones. Before that the
 // current state (including everything that will be overwritten) is saved under
 // refs/holdfast-backup/, so the rollback can be undone by rolling back to that backup.
+//
+// The rollback is journaled (see RollbackJournal): if it stops after the
+// first file was changed, the journal stays and the error says how to finish
+// or undo it. It refuses to start while an interrupted rollback is pending.
 func (g *Git) Rollback(snap Snapshot, now time.Time) (Changes, Snapshot, error) {
+	return g.rollback(snap, now, false)
+}
+
+// ContinueRollback rolls back to snap while an interrupted rollback is
+// pending, replacing its journal: snap is either the journal's target
+// (--resume) or its backup (--abort). From a half-restored tree both give a
+// consistent state, and the half-restored state itself is backed up first.
+func (g *Git) ContinueRollback(snap Snapshot, now time.Time) (Changes, Snapshot, error) {
+	j, err := g.PendingRollback()
+	if err != nil {
+		return Changes{}, Snapshot{}, err
+	}
+	if j == nil {
+		return Changes{}, Snapshot{}, errors.New("there is no interrupted rollback to continue")
+	}
+	return g.rollback(snap, now, true)
+}
+
+// rollbackStep is a test seam: when set, it is called at each point where a
+// rollback can be interrupted, and an error it returns stops the rollback
+// there, just as a crash would (the journal stays).
+var rollbackStep func(step string) error
+
+func step(name string) error {
+	if rollbackStep != nil {
+		return rollbackStep(name)
+	}
+	return nil
+}
+
+func (g *Git) rollback(snap Snapshot, now time.Time, continuing bool) (Changes, Snapshot, error) {
+	if !continuing {
+		if j, err := g.PendingRollback(); err != nil {
+			return Changes{}, Snapshot{}, err
+		} else if j != nil {
+			return Changes{}, Snapshot{}, fmt.Errorf("%w: %s", ErrRollbackPending, j.PendingHelp())
+		}
+	}
 	plan, err := g.PlanRollback(snap)
 	if err != nil {
 		return Changes{}, Snapshot{}, err
@@ -806,22 +882,49 @@ func (g *Git) Rollback(snap Snapshot, now time.Time) (Changes, Snapshot, error) 
 	if err != nil {
 		return Changes{}, Snapshot{}, fmt.Errorf("backup before rollback: %w", err)
 	}
+	// The backup must be readable before anything is changed.
+	if _, err := g.run(nil, nil, "cat-file", "-e", backup.Commit+"^{tree}"); err != nil {
+		return Changes{}, backup, fmt.Errorf("the backup before rollback can't be read back, so the rollback did not start: %w", err)
+	}
+	j := RollbackJournal{
+		Target:  JournalSnap{Ref: snap.Ref, Commit: snap.Commit},
+		Backup:  JournalSnap{Ref: backup.Ref, Commit: backup.Commit},
+		Started: now,
+		PID:     os.Getpid(),
+	}
+	if err := g.writeJournal(j, continuing); err != nil {
+		if errors.Is(err, ErrRollbackPending) {
+			return Changes{}, backup, errors.New("another rollback started at the same time; nothing was changed by this one")
+		}
+		return Changes{}, backup, fmt.Errorf("could not write the rollback journal, so the rollback did not start: %w", err)
+	}
 	ch := plan.Changes
+	// From here on files change: an error leaves the journal in place.
+	interrupted := func(err error) (Changes, Snapshot, error) {
+		return ch, backup, fmt.Errorf("the rollback stopped halfway: %w\n%s", err, j.PendingHelp())
+	}
+	if err := step("journaled"); err != nil {
+		return interrupted(err)
+	}
 
 	for _, rel := range ch.Added {
 		p := filepath.Join(g.Dir, filepath.FromSlash(rel))
 		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return ch, backup, err
+			return interrupted(err)
 		}
 		removeEmptyParents(g.Dir, filepath.Dir(p))
+		if err := step("deleted"); err != nil {
+			return interrupted(err)
+		}
 	}
 
 	// checkout-index through a temporary index writes the snapshot's files into
 	// the working tree without changing HEAD or the real index. Only the
 	// changed paths are written: the other files are not touched at all.
+	snapTree := snap.Commit + "^{tree}"
 	if len(ch.Modified) > 0 {
 		err = g.withTempIndex(func(env []string) error {
-			if _, err := g.run(env, nil, "read-tree", snap.Commit+"^{tree}"); err != nil {
+			if _, err := g.run(env, nil, "read-tree", snapTree); err != nil {
 				return err
 			}
 			stdin := strings.NewReader(strings.Join(ch.Modified, "\x00") + "\x00")
@@ -829,8 +932,17 @@ func (g *Git) Rollback(snap Snapshot, now time.Time) (Changes, Snapshot, error) 
 			return err
 		})
 		if err != nil {
-			return ch, backup, err
+			return interrupted(err)
 		}
+	}
+	if err := step("restored"); err != nil {
+		return interrupted(err)
+	}
+	if err := g.verifyRollback(snapTree, ch); err != nil {
+		return interrupted(err)
+	}
+	if err := g.clearJournal(); err != nil {
+		return ch, backup, fmt.Errorf("the rollback is done and verified, but its journal could not be removed: %w", err)
 	}
 	if backups, err := g.Backups(); err == nil {
 		_ = g.deleteOld(backups, KeepBackups)
