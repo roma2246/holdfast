@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -350,7 +351,7 @@ are shown.`,
 			if err != nil {
 				return err
 			}
-			rawPaths := append(args, pathFlag...)
+			rawPaths := slices.Concat(args, pathFlag)
 			filterPaths := a.normalizeFilterPaths(g.Dir, rawPaths)
 			ch, err := g.ChangesSince(snap, filterPaths...)
 			if err != nil {
@@ -413,16 +414,17 @@ state before it (--abort).`,
 			if err != nil {
 				return err
 			}
-			rawPaths := append(args, pathFlag...)
+			rawPaths := slices.Concat(args, pathFlag)
 			filterPaths := a.normalizeFilterPaths(g.Dir, rawPaths)
 			if continuing && len(filterPaths) > 0 {
-				return errors.New("--resume and --abort continue the interrupted rollback as it was; drop the paths")
+				return errors.New("--resume and --abort continue the interrupted rollback with its own selection; drop the paths")
 			}
 			var snap guard.Snapshot
 			switch {
 			case continuing && pending == nil:
 				return errors.New("there is no interrupted rollback to resume or abort")
 			case continuing:
+				filterPaths = pending.Paths // the plan shown must be the one that runs
 				js := pending.Target
 				if abort {
 					js = pending.Backup
@@ -535,7 +537,7 @@ func (a *app) normalizeFilterPaths(root string, paths []string) []string {
 		if p == "" {
 			continue
 		}
-		if strings.ContainsAny(p, "*?[") {
+		if strings.ContainsAny(p, "*?") {
 			if filepath.IsAbs(p) {
 				if rel, err := filepath.Rel(root, p); err == nil && !strings.HasPrefix(rel, "..") {
 					out = append(out, filepath.ToSlash(rel))

@@ -32,7 +32,7 @@ an older Russian-language layout and Codex hooks and does not match the reposito
 | Concurrent snapshots | was broken (A3), fixed in B1 |
 | Fast path after re-editing a file | was silently falling back to the slow path, fixed in B1 |
 | Recovery of an interrupted rollback | added in B2: journal, `--resume`/`--abort`, hash check |
-| Selective rollback of chosen files | missing (C1) |
+| Selective rollback of chosen files | added (C1, PR #1 by Deadpool2000 plus fixes) |
 | Machine-readable output (JSON) | missing (C7) |
 | Hooks for agents other than Claude Code | missing (E) |
 | Windows | builds; path policy targets macOS/Linux |
@@ -55,7 +55,7 @@ edited a second time): 20 000 files p50 390 ms, p95 4.1 s.
 | Task | Status | Evidence | Next step |
 | --- | --- | --- | --- |
 | B1. Snapshot race | done | See below | — |
-| B2. Interrupted rollback | done | See below | Selective rollback must keep the same journal (C1) |
+| B2. Interrupted rollback | done | See below | — |
 | B3. Coverage and limitations | not started | — | Snapshot status/size in `guard list`; binary, symlink, LFS, sparse-checkout tests |
 
 ### B1: what was done
@@ -109,3 +109,29 @@ edited a second time): 20 000 files p50 390 ms, p95 4.1 s.
 - Found, not fixed (belongs to C3): the CLI shows a plan, then `Rollback` computes the
   plan again; if the tree changes in between, the executed plan can differ from the one
   shown.
+
+## Stage C: selective rollback
+
+| Task | Status | Evidence | Next step |
+| --- | --- | --- | --- |
+| C1. Roll back chosen files | done | See below | — |
+| C2. Exact plan before rollback | partial | The plan lists restore/delete/keep per path; no "excluded paths" section yet | Show unselected changes that stay |
+| C3. Plan shown = plan executed | not started | The CLI plans, then `Rollback` plans again | Pass the shown plan's trees to `Rollback`, refuse if the tree changed |
+| C4. Warn about later edits | not started | — | — |
+
+### C1: what was done
+
+- Merged PR #1 (Deadpool2000): `guard rollback PATH...` / `--path`, `guard diff PATH...`,
+  `MatchesPath`, tests `TestSelectiveRollback`, `TestSelectiveRollbackPreservesUnselectedFiles`,
+  `TestGuardSelectiveRollback`.
+- Fixed after the merge:
+  - `guard diff PATH` passed the patterns to git as pathspecs, where `*` crosses
+    directories, so it could show files the rollback would not touch. It now passes exactly
+    the planned paths, literally [`TestSelectiveDiffMatchesRollback`].
+  - When a file and a directory swapped places, `checkout-index -f` silently deleted an
+    unselected path. Such a selection is now refused with the blocking paths named
+    [`TestSelectiveRollbackRefusesHiddenDeletion`, both directions].
+  - The rollback journal keeps the selection, so `--resume`/`--abort` continue the same
+    selective rollback instead of the whole tree [`TestInterruptedSelectiveRollbackKeepsSelection`].
+  - A backslash in a pattern is a separator only on Windows; `[` is no longer treated as a
+    glob character (character classes are not supported); `.gitignore` regained its final newline.

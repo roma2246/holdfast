@@ -278,6 +278,11 @@ deleted), so it never takes more than 10 MB on disk; `holdfast guard log` reads 
   atomic file-system operation: in between, the files can be half restored.
 - **Selective rollback:** Specify paths or globs to restore only individual files or directories
   without discarding the rest of the agent's work: `holdfast guard rollback --to 2 path/to/file.go "src/**"`.
+  A path selects that file or everything under that directory; `*` and `?` stay within one
+  directory, `**` crosses directories, and a pattern without `/` (`*.go`) matches at any depth.
+  `guard diff` with the same paths shows exactly what will be rolled back. If a file and a
+  directory swapped places and restoring the selection would delete a path you did not
+  select, the rollback refuses and names that path.
 - **A human decides on rollback:** the agent can look at `guard list` and `guard diff`, but for
   `guard rollback` the hook asks for your confirmation.
 - **If a restore point wasn't created,** Holdfast doesn't stay silent: a warning appears in

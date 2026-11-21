@@ -396,9 +396,12 @@ func TestMatchesPath(t *testing.T) {
 		{"src/*.go", "src/sub/auth.go", false},
 		{"src/**/*.go", "src/sub/deep/auth.go", true},
 		{"doc?", "docs", true},
-		// Windows path separators
-		{"src\\auth.go", "src/auth.go", true},
-		{"src\\sub\\auth.go", "src/sub/auth.go", true},
+		// A backslash is a separator only on Windows; elsewhere it is part of a name.
+		{"src\\auth.go", "src/auth.go", filepath.Separator == '\\'},
+		{"src\\sub\\auth.go", "src/sub/auth.go", filepath.Separator == '\\'},
+		// Character classes are not supported: `[` is literal.
+		{"doc[s]", "docs", false},
+		{"doc[s]", "doc[s]", true},
 	}
 	for _, tc := range cases {
 		got := MatchesPath(tc.pattern, tc.target)
@@ -496,5 +499,34 @@ func TestSelectiveRollback(t *testing.T) {
 	}
 	if got := read(t, dir, "new_a.txt"); got != "agent new a\n" {
 		t.Errorf("after undo new_a.txt = %q; want agent new a", got)
+	}
+}
+
+// The diff for a selection shows exactly what the selective rollback would
+// touch: in a git pathspec `*` crosses directories, in MatchesPath it doesn't.
+func TestSelectiveDiffMatchesRollback(t *testing.T) {
+	dir := gitRepo(t, true)
+	write(t, dir, "src/a.go", "a\n")
+	write(t, dir, "src/sub/b.go", "b\n")
+	g, _ := OpenGit(dir)
+	snap, err := g.CreateSnapshot(time.Now(), SnapshotMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "src/a.go", "a2\n")
+	write(t, dir, "src/sub/b.go", "b2\n")
+	plan, err := g.PlanRollback(snap, "src/*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(plan.Changes.Modified) != "[src/a.go]" {
+		t.Fatalf("plan: %v", plan.Changes.Modified)
+	}
+	var out bytes.Buffer
+	if err := g.Diff(&out, snap, DiffOptions{NameStatus: true}, "src/*.go"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(out.String()) != "M\tsrc/a.go" {
+		t.Fatalf("the diff must list exactly the planned path, got:\n%s", out.String())
 	}
 }

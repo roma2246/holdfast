@@ -85,6 +85,15 @@ not simulated separately; it leaves the same kind of state as the "after the fir
 deletion" point and is handled by the same recovery, but there is no test for that exact
 moment.
 
+## Selective rollback
+
+`guard rollback PATH...` filters the plan to the matching paths; the backup still holds the
+whole tree, so it can be undone like a full rollback. Unselected paths are not touched
+[`TestSelectiveRollbackPreservesUnselectedFiles`]; when that is impossible because a file
+and a directory swapped places, the rollback refuses
+[`TestSelectiveRollbackRefusesHiddenDeletion`]. The journal stores the selection
+[`TestInterruptedSelectiveRollbackKeepsSelection`].
+
 ## Implementation notes
 
 The fast path keeps a service index in `.git/holdfast/index`, so git re-hashes only

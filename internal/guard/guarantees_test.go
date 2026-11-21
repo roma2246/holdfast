@@ -25,7 +25,8 @@ import (
 //     when several snapshot processes run at once;
 //   - a rollback interrupted at any point is reported to the next process,
 //     and both finishing it and undoing it give a consistent state;
-//   - a selective rollback touches only the requested files, leaving all other files unchanged;
+//   - a selective rollback touches only the requested files, leaving all other files unchanged,
+//     or refuses when that is impossible (a file and a directory swapped places);
 //   - a snapshot of another working tree is never picked;
 //   - mass deletion is allowed only if what is deleted is in the restore point;
 //   - a failed restore point does not look like a successful one;
@@ -629,6 +630,82 @@ func TestSweepTemp(t *testing.T) {
 			t.Errorf("%s: exists=%v, want %v", filepath.Base(p), err == nil, want)
 		}
 	}
+}
+
+// A selection that can't be restored without deleting an unselected path
+// (a file and a directory swapped places) is refused, both ways round, and
+// nothing changes on disk.
+func TestSelectiveRollbackRefusesHiddenDeletion(t *testing.T) {
+	cases := []struct {
+		name, selected string
+		setup, edit    func(t *testing.T, dir string)
+	}{
+		{"a file now sits where the selected file's directory was", "x/a",
+			func(t *testing.T, dir string) { write(t, dir, "x/a", "in dir\n") },
+			func(t *testing.T, dir string) {
+				os.RemoveAll(filepath.Join(dir, "x"))
+				write(t, dir, "x", "now a file\n")
+			}},
+		// "y*" selects the path y but not y/new.txt (a plain "y" would select both).
+		{"a directory of new files now sits where the selected file was", "y*",
+			func(t *testing.T, dir string) { write(t, dir, "y", "a file\n") },
+			func(t *testing.T, dir string) {
+				os.Remove(filepath.Join(dir, "y"))
+				write(t, dir, "y/new.txt", "unselected new file\n")
+			}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := gitRepo(t, true)
+			c.setup(t, dir)
+			g, _ := OpenGit(dir)
+			snap, err := g.CreateSnapshot(time.Now(), SnapshotMeta{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.edit(t, dir)
+			before := diskState(t, dir)
+			_, _, err = g.Rollback(snap, time.Now(), c.selected)
+			if err == nil || !strings.Contains(err.Error(), "did not select") {
+				t.Fatalf("expected a refusal, got %v", err)
+			}
+			sameState(t, "after the refusal", diskState(t, dir), before)
+			if j, _ := g.PendingRollback(); j != nil {
+				t.Fatal("a refused rollback left a journal")
+			}
+		})
+	}
+}
+
+// An interrupted selective rollback resumes with the same selection: the
+// unselected changes survive --resume.
+func TestInterruptedSelectiveRollbackKeepsSelection(t *testing.T) {
+	dir, snap, original, edited := rollbackFixture(t)
+	g, _ := OpenGit(dir)
+	rollbackStep = func(step string) error {
+		if step == "journaled" {
+			return errors.New("simulated crash")
+		}
+		return nil
+	}
+	_, _, err := g.Rollback(snap, time.Now(), "a.txt")
+	rollbackStep = nil
+	if err == nil {
+		t.Fatal("expected the simulated interruption")
+	}
+	j, _ := g.PendingRollback()
+	if j == nil || fmt.Sprint(j.Paths) != "[a.txt]" || !strings.Contains(j.PendingHelp(), "of a.txt") {
+		t.Fatalf("the journal must keep the selection: %+v", j)
+	}
+	if _, _, err := g.ContinueRollback(j.Target.snapshot(dir), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{}
+	for k, v := range edited {
+		want[k] = v
+	}
+	want["a.txt"] = original["a.txt"]
+	sameState(t, "after resuming a selective rollback", diskState(t, dir), want)
 }
 
 func TestSnapshotOrder(t *testing.T) {

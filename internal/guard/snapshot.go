@@ -8,8 +8,10 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -580,11 +582,17 @@ func (g *Git) Diff(w io.Writer, snap Snapshot, opt DiffOptions, paths ...string)
 		args = append(args, "--name-status")
 	}
 	args = append(args, snap.Commit+"^{tree}", plan.Tree)
+	var env []string
 	if len(paths) > 0 {
+		// Exactly the paths the rollback would touch, taken literally: git's
+		// own pathspec globbing differs from MatchesPath (there `*` crosses
+		// directories), and the diff must show what the rollback will do.
 		args = append(args, "--")
-		args = append(args, paths...)
+		args = append(args, plan.Changes.Modified...)
+		args = append(args, plan.Changes.Added...)
+		env = []string{"GIT_LITERAL_PATHSPECS=1"}
 	}
-	out, err := g.run(nil, nil, args...)
+	out, err := g.run(env, nil, args...)
 	if err != nil {
 		return err
 	}
@@ -623,9 +631,16 @@ func (c Changes) Filter(patterns ...string) Changes {
 
 // MatchesPath reports whether target (a slash-separated path relative to repo root)
 // matches pattern. It supports exact path matches, directory prefixes, and glob wildcards (*, **, ?).
+//
+// target comes from git and is always slash-separated. A backslash in the
+// pattern is a separator only on Windows: elsewhere it is a valid character
+// of a file name. Character classes ([abc]) are not supported: GlobToRegexp
+// takes `[` literally.
 func MatchesPath(pattern, target string) bool {
-	pattern = strings.ReplaceAll(strings.TrimSpace(pattern), "\\", "/")
-	target = strings.ReplaceAll(strings.TrimSpace(target), "\\", "/")
+	pattern = strings.TrimSpace(pattern)
+	if filepath.Separator == '\\' {
+		pattern = strings.ReplaceAll(pattern, "\\", "/")
+	}
 
 	pattern = strings.TrimPrefix(pattern, "./")
 	target = strings.TrimPrefix(target, "./")
@@ -637,18 +652,56 @@ func MatchesPath(pattern, target string) bool {
 	if target == patternClean || strings.HasPrefix(target, patternClean+"/") {
 		return true
 	}
-	if strings.ContainsAny(pattern, "*?[") {
+	if strings.ContainsAny(pattern, "*?") {
 		reStr := GlobToRegexp(patternClean)
 		if re, err := regexp.Compile(reStr); err == nil {
 			if re.MatchString(target) {
 				return true
 			}
-			if !strings.Contains(patternClean, "/") && re.MatchString(filepath.Base(target)) {
+			if !strings.Contains(patternClean, "/") && re.MatchString(path.Base(target)) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// checkSelection refuses a selective rollback that can't be done without
+// touching an unselected path: a file and a directory swapped places, so
+// restoring a selected path means deleting an unselected one (a file that
+// sits where a selected file's directory must be, or a directory of
+// unselected files where a selected file must be). Git would silently delete
+// them, and "unselected files stay as they are" would no longer hold.
+func checkSelection(full, selected Changes) error {
+	chosen := map[string]bool{}
+	for _, p := range append(append([]string{}, selected.Added...), selected.Modified...) {
+		chosen[p] = true
+	}
+	added := map[string]bool{}
+	for _, p := range full.Added {
+		added[p] = true
+	}
+	var blockers []string
+	for _, m := range selected.Modified {
+		for d := path.Dir(m); d != "." && d != "/"; d = path.Dir(d) {
+			if added[d] && !chosen[d] {
+				blockers = append(blockers, d)
+			}
+		}
+		for _, a := range full.Added {
+			if strings.HasPrefix(a, m+"/") && !chosen[a] {
+				blockers = append(blockers, a)
+			}
+		}
+	}
+	if len(blockers) == 0 {
+		return nil
+	}
+	sort.Strings(blockers)
+	blockers = slices.Compact(blockers)
+	return fmt.Errorf("the selected paths can't be restored without deleting paths you did not select "+
+		"(a file and a directory swapped places): %s; add them to the selection or roll back everything",
+		strings.Join(blockers, ", "))
 }
 
 // MatchesAny reports whether target matches any of the patterns.
@@ -774,7 +827,11 @@ func (g *Git) PlanRollback(snap Snapshot, paths ...string) (RollbackPlan, error)
 		return plan, err
 	}
 	if len(paths) > 0 {
-		plan.Changes = plan.Changes.Filter(paths...)
+		full := plan.Changes
+		plan.Changes = full.Filter(paths...)
+		if err := checkSelection(full, plan.Changes); err != nil {
+			return plan, err
+		}
 	}
 	return plan, g.guardNestedRepos(snapTree, &plan)
 }
@@ -916,6 +973,8 @@ func (g *Git) Rollback(snap Snapshot, now time.Time, paths ...string) (Changes, 
 // pending, replacing its journal: snap is either the journal's target
 // (--resume) or its backup (--abort). From a half-restored tree both give a
 // consistent state, and the half-restored state itself is backed up first.
+//
+// A selective rollback continues with the same selection, which the journal keeps.
 func (g *Git) ContinueRollback(snap Snapshot, now time.Time) (Changes, Snapshot, error) {
 	j, err := g.PendingRollback()
 	if err != nil {
@@ -924,7 +983,7 @@ func (g *Git) ContinueRollback(snap Snapshot, now time.Time) (Changes, Snapshot,
 	if j == nil {
 		return Changes{}, Snapshot{}, errors.New("there is no interrupted rollback to continue")
 	}
-	return g.rollback(snap, now, true, nil)
+	return g.rollback(snap, now, true, j.Paths)
 }
 
 // rollbackStep is a test seam: when set, it is called at each point where a
@@ -963,6 +1022,7 @@ func (g *Git) rollback(snap Snapshot, now time.Time, continuing bool, paths []st
 	j := RollbackJournal{
 		Target:  JournalSnap{Ref: snap.Ref, Commit: snap.Commit},
 		Backup:  JournalSnap{Ref: backup.Ref, Commit: backup.Commit},
+		Paths:   paths,
 		Started: now,
 		PID:     os.Getpid(),
 	}

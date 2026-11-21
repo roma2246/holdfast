@@ -16,8 +16,9 @@ import (
 // interrupted at any point (an error, a crash, a killed process) is still
 // visible to the next Holdfast process, which can finish or undo it.
 type RollbackJournal struct {
-	Target  JournalSnap `json:"target"` // the snapshot the files are being returned to
-	Backup  JournalSnap `json:"backup"` // the state right before the rollback
+	Target  JournalSnap `json:"target"`          // the snapshot the files are being returned to
+	Backup  JournalSnap `json:"backup"`          // the state right before the rollback
+	Paths   []string    `json:"paths,omitempty"` // a selective rollback's patterns; empty means everything
 	Started time.Time   `json:"started"`
 	PID     int         `json:"pid"`
 }
@@ -71,10 +72,14 @@ func (g *Git) PendingRollback() (*RollbackJournal, error) {
 
 // PendingHelp is what to tell the user about an interrupted rollback.
 func (j *RollbackJournal) PendingHelp() string {
-	return fmt.Sprintf("a rollback to %s (started %s) was interrupted, so the files may be half restored.\n"+
+	scope := ""
+	if len(j.Paths) > 0 {
+		scope = " of " + strings.Join(j.Paths, ", ")
+	}
+	return fmt.Sprintf("a rollback%s to %s (started %s) was interrupted, so the files may be half restored.\n"+
 		"  Finish it:           holdfast guard rollback --resume\n"+
 		"  Undo it (back to the state before it): holdfast guard rollback --abort  (backup %s)",
-		j.Target.Name(), j.Started.Local().Format("2006-01-02 15:04:05"), j.Backup.Name())
+		scope, j.Target.Name(), j.Started.Local().Format("2006-01-02 15:04:05"), j.Backup.Name())
 }
 
 // writeJournal saves the journal durably before any file is changed. With
